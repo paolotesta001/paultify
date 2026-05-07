@@ -1,0 +1,76 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html, body, #root {
+  height: 100%;
+  background: #070708;
+  color: #f4f4f6;
+  overscroll-behavior: none;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Inter', system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  /* iOS safe areas are applied per-component (BottomTabs adds padding-bottom,
+     main content adds padding-top) so the layout can fill the notch/dynamic
+     island area with the page background instead of leaving white bars. */
+}
+
+/* Push the main scroll area below the iOS status bar in standalone mode. */
+.safe-pt {
+  padding-top: env(safe-area-inset-top);
+}
+
+/* hide native scrollbars on lyric column for cleaner karaoke feel */
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { scrollbar-width: none; }
+
+/* range slider: webkit/moz */
+input[type='range'].seek {
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  height: 24px;
+  width: 100%;
+  cursor: pointer;
+}
+input[type='range'].seek::-webkit-slider-runnable-track {
+  height: 4px;
+  background: #26262d;
+  border-radius: 2px;
+}
+input[type='range'].seek::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 14px;
+  width: 14px;
+  border-radius: 50%;
+  background: #f4f4f6;
+  margin-top: -5px;
+  border: none;
+}
+input[type='range'].seek::-moz-range-track {
+  height: 4px;
+  background: #26262d;
+  border-radius: 2px;
+}
+input[type='range'].seek::-moz-range-thumb {
+  height: 14px;
+  width: 14px;
+  border-radius: 50%;
+  background: #f4f4f6;
+  border: none;
+}
+
+/* fade gradient for lyrics edges */
+.lyric-fade {
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, #000 25%, #000 75%, transparent 100%);
+  mask-image: linear-gradient(to bottom, transparent 0%, #000 25%, #000 75%, transparent 100%);
+}
