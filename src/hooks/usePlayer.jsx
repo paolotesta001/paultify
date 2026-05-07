@@ -23,17 +23,25 @@ export function PlayerProvider({ children }) {
     audioRef.current = a;
   }
 
-  const [currentSong, setCurrentSong] = useState(null); // metadata, no Blob
+  const [currentSong, setCurrentSong] = useState(null); // metadata + coverUrl, no Blob
   const [isPlaying, setIsPlaying] = useState(false);
   const [duration, setDuration] = useState(0);
   const [queue, setQueue] = useState([]); // array of song ids
+  const [shuffle, setShuffle] = useState(false);
   const objectUrlRef = useRef(null);
+  const coverUrlRef = useRef(null);
 
   // ─── helpers ───────────────────────────────────────────────────────────
   const revokeUrl = () => {
     if (objectUrlRef.current) {
       URL.revokeObjectURL(objectUrlRef.current);
       objectUrlRef.current = null;
+    }
+  };
+  const revokeCover = () => {
+    if (coverUrlRef.current) {
+      URL.revokeObjectURL(coverUrlRef.current);
+      coverUrlRef.current = null;
     }
   };
 
@@ -45,13 +53,19 @@ export function PlayerProvider({ children }) {
     if (!row || !row.blob) return;
 
     revokeUrl();
+    revokeCover();
     const url = URL.createObjectURL(row.blob);
     objectUrlRef.current = url;
     audio.src = url;
     audio.load();
 
-    const { blob, ...meta } = row;
-    setCurrentSong(meta);
+    const { blob, coverBlob, ...meta } = row;
+    let coverUrl = null;
+    if (coverBlob) {
+      coverUrl = URL.createObjectURL(coverBlob);
+      coverUrlRef.current = coverUrl;
+    }
+    setCurrentSong({ ...meta, coverUrl });
     setDuration(meta.duration || 0);
 
     // Fire-and-forget timestamp update — failure is harmless.
@@ -97,6 +111,7 @@ export function PlayerProvider({ children }) {
     audio.removeAttribute('src');
     audio.load();
     revokeUrl();
+    revokeCover();
     setCurrentSong(null);
     setIsPlaying(false);
     setDuration(0);
@@ -107,12 +122,23 @@ export function PlayerProvider({ children }) {
     }
   }, []);
 
+  const toggleShuffle = useCallback(() => setShuffle(s => !s), []);
+
+  // When shuffle is on, next() picks any other queue item at random; prev()
+  // also goes random so cycling backwards is meaningful. With shuffle off
+  // the queue plays in its original order.
   const next = useCallback(() => {
     if (!queue.length || !currentSong) return;
+    if (shuffle && queue.length > 1) {
+      const others = queue.filter(id => id !== currentSong.id);
+      const nextId = others[Math.floor(Math.random() * others.length)];
+      if (nextId) loadSong(nextId);
+      return;
+    }
     const i = queue.indexOf(currentSong.id);
     const nextId = queue[(i + 1) % queue.length];
     if (nextId) loadSong(nextId);
-  }, [queue, currentSong, loadSong]);
+  }, [queue, currentSong, loadSong, shuffle]);
 
   const prev = useCallback(() => {
     const audio = audioRef.current;
@@ -122,10 +148,16 @@ export function PlayerProvider({ children }) {
       return;
     }
     if (!queue.length || !currentSong) return;
+    if (shuffle && queue.length > 1) {
+      const others = queue.filter(id => id !== currentSong.id);
+      const prevId = others[Math.floor(Math.random() * others.length)];
+      if (prevId) loadSong(prevId);
+      return;
+    }
     const i = queue.indexOf(currentSong.id);
     const prevId = queue[(i - 1 + queue.length) % queue.length];
     if (prevId) loadSong(prevId);
-  }, [queue, currentSong, loadSong]);
+  }, [queue, currentSong, loadSong, shuffle]);
 
   // ─── audio element event wiring ────────────────────────────────────────
   useEffect(() => {
@@ -155,8 +187,12 @@ export function PlayerProvider({ children }) {
     ms.metadata = new window.MediaMetadata({
       title: currentSong.title || 'Unknown',
       artist: currentSong.artist || 'Unknown Artist',
-      album: currentSong.album || ''
-      // artwork omitted for now — would require cover art extraction
+      album: currentSong.album || '',
+      // The same Blob URL the in-app player uses; iOS picks it up for the
+      // lock-screen / Control Center widget.
+      artwork: currentSong.coverUrl
+        ? [{ src: currentSong.coverUrl, sizes: '512x512', type: 'image/jpeg' }]
+        : []
     });
     const handlers = {
       play: () => audioRef.current.play().catch(() => {}),
@@ -199,8 +235,8 @@ export function PlayerProvider({ children }) {
     return () => audio.removeEventListener('timeupdate', tick);
   }, [currentSong]);
 
-  // Cleanup the last object URL on unmount.
-  useEffect(() => () => revokeUrl(), []);
+  // Cleanup the last object URLs on unmount.
+  useEffect(() => () => { revokeUrl(); revokeCover(); }, []);
 
   const value = useMemo(() => ({
     audioRef,
@@ -208,14 +244,16 @@ export function PlayerProvider({ children }) {
     isPlaying,
     duration,
     queue,
+    shuffle,
     loadSong,
     playFromQueue,
     togglePlay,
     seek,
     next,
     prev,
-    stop
-  }), [currentSong, isPlaying, duration, queue, loadSong, playFromQueue, togglePlay, seek, next, prev, stop]);
+    stop,
+    toggleShuffle
+  }), [currentSong, isPlaying, duration, queue, shuffle, loadSong, playFromQueue, togglePlay, seek, next, prev, stop, toggleShuffle]);
 
   return <PlayerCtx.Provider value={value}>{children}</PlayerCtx.Provider>;
 }

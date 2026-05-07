@@ -11,6 +11,7 @@ import Playlists from './components/Playlists.jsx';
 import PlaylistView from './components/PlaylistView.jsx';
 import ArtistView from './components/ArtistView.jsx';
 import AlbumView from './components/AlbumView.jsx';
+import AllSongsView from './components/AllSongsView.jsx';
 
 // Mobile-first shell with three bottom tabs (Home, Search, Playlists). Each
 // tab can drill into a sub-view (artist, album, playlist) without losing
@@ -68,6 +69,14 @@ export default function App() {
         artistName={sub.artist}
         onBack={goBack}
         onPlay={showPlayer}
+      />
+    );
+  } else if (sub?.kind === 'all-songs') {
+    content = (
+      <AllSongsView
+        onBack={goBack}
+        onPlay={showPlayer}
+        onOpen={openTarget}
       />
     );
   } else if (tab === 'home') {

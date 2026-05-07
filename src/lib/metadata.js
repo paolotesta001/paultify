@@ -47,6 +47,7 @@ export async function extractMetadata(file) {
   let title = null;
   let album = null;
   let duration = null;
+  let coverBlob = null;
 
   try {
     const { parseBlob } = await import('music-metadata');
@@ -55,6 +56,12 @@ export async function extractMetadata(file) {
     title = meta.common.title || null;
     album = meta.common.album || null;
     duration = meta.format.duration || null;
+    // First embedded picture (typically the album cover). yt-dlp writes the
+    // YouTube thumbnail here when --embed-thumbnail is passed.
+    const pic = meta.common.picture?.[0];
+    if (pic?.data) {
+      coverBlob = new Blob([pic.data], { type: pic.format || 'image/jpeg' });
+    }
   } catch {
     // music-metadata can fail on malformed tags — fall through to filename.
   }
@@ -84,7 +91,8 @@ export async function extractMetadata(file) {
     artist: cleaned.artist,
     title: cleaned.title,
     album: album?.trim() || null,
-    duration: duration ? Number(duration.toFixed(3)) : null
+    duration: duration ? Number(duration.toFixed(3)) : null,
+    coverBlob
   };
 }
 

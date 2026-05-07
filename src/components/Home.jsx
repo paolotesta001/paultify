@@ -153,55 +153,23 @@ export default function Home({ onOpen, onPlay }) {
       )}
 
       {songs && songs.length > 0 && (
-        <section className="mt-2">
-          <div className="px-4 mb-2 flex items-center justify-between">
-            <h2 className="text-base font-semibold">All songs</h2>
-            <span className="text-xs text-ink-400">{songs.length}</span>
-          </div>
-          <ul>
-            {songs.map(song => {
-              const isCurrent = currentSong?.id === song.id;
-              return (
-                <li key={song.id}>
-                  <button
-                    onClick={() => handlePlaySong(song)}
-                    className={
-                      'w-full flex items-center gap-3 px-4 py-2.5 active:bg-ink-800 ' +
-                      (isCurrent ? 'text-accent' : 'text-ink-100')
-                    }
-                  >
-                    <div className="w-10 h-10 rounded bg-ink-800 flex items-center justify-center text-ink-400 shrink-0">
-                      <Music size={18} />
-                    </div>
-                    <div className="flex-1 min-w-0 text-left">
-                      <p className="text-sm font-medium truncate">{song.title}</p>
-                      <p className="text-xs text-ink-400 truncate">
-                        <span
-                          onClick={e => { e.stopPropagation(); onOpen({ kind: 'artist', name: song.artist }); }}
-                          className="hover:underline"
-                          role="link"
-                        >
-                          {song.artist}
-                        </span>
-                        {song.album && (
-                          <>
-                            {' · '}
-                            <span
-                              onClick={e => { e.stopPropagation(); onOpen({ kind: 'album', name: song.album, artist: song.artist }); }}
-                              className="hover:underline"
-                              role="link"
-                            >
-                              {song.album}
-                            </span>
-                          </>
-                        )}
-                      </p>
-                    </div>
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
+        <section className="mt-2 px-4">
+          <h2 className="text-base font-semibold mb-2">Library</h2>
+          <button
+            onClick={() => onOpen({ kind: 'all-songs' })}
+            className="w-full flex items-center gap-3 p-3 rounded-xl bg-ink-800/60 border border-ink-700/60 active:bg-ink-700/60 text-left"
+          >
+            <div className="w-14 h-14 rounded bg-gradient-to-br from-accent/40 to-accent-dim/30 flex items-center justify-center text-ink-100 shrink-0">
+              <Music size={28} />
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-semibold text-ink-100">All songs</p>
+              <p className="text-xs text-ink-400">
+                {songs.length} {songs.length === 1 ? 'track' : 'tracks'} · tap to browse
+              </p>
+            </div>
+            <span className="text-ink-500">›</span>
+          </button>
         </section>
       )}
     </div>

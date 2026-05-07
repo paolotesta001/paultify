@@ -66,7 +66,7 @@ export default function YouTubeSearch() {
         </button>
       </div>
       <p className="mt-2 text-[11px] text-ink-500">
-        Returns instantly — track downloads in the queue on the left.
+        Returns instantly — track downloads in the floating queue button.
       </p>
     </div>
   );

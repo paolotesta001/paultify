@@ -6,20 +6,28 @@ import { useLyricsSync } from '../hooks/useLyricsSync.js';
 import { usePlayer } from '../hooks/usePlayer.jsx';
 import { refetchLyricsForSong } from '../lib/refetchLyrics.js';
 
-export default function Lyrics() {
+// Three lyric modes:
+//   karaoke  — one centered active line, others dimmed (the original)
+//   full     — all lines visible, scrollable, no auto-centering
+//   big      — only the active line + the next, displayed huge
+//
+// Mode is picked by a small pill switcher above the lyrics.
+const MODES = [
+  { id: 'karaoke', label: 'Karaoke' },
+  { id: 'full', label: 'Full' },
+  { id: 'big', label: 'Big' }
+];
+
+export default function Lyrics({ initialMode = 'karaoke' }) {
   const { currentSong, audioRef, seek } = usePlayer();
   const songId = currentSong?.id;
+  const [mode, setMode] = useState(initialMode);
 
-  // Pull lyrics row reactively. useLiveQuery re-runs when the row changes
-  // (e.g. when LRCLIB fetch completes after upload).
-  // Coerce missing rows to `null` so we can distinguish "still loading"
-  // (undefined) from "no row exists yet" (null).
   const lyricsRow = useLiveQuery(
     () => (songId ? db.lyrics.get(songId).then(r => r ?? null) : null),
     [songId]
   );
 
-  // Parse once per row.
   const { lines, plain } = useMemo(() => {
     if (!lyricsRow) return { lines: [], plain: null };
     if (lyricsRow.lrcText) {
@@ -31,7 +39,73 @@ export default function Lyrics() {
 
   const activeIndex = useLyricsSync(audioRef, lines);
 
-  // Auto-scroll the active line into the centered "karaoke" position.
+  if (!songId) return null;
+
+  return (
+    <div className="flex flex-col h-full">
+      <ModeSwitcher mode={mode} onChange={setMode} disabled={!lines.length && !plain} />
+
+      <div className="flex-1 min-h-0">
+        {lyricsRow === undefined && <Centered>Loading…</Centered>}
+
+        {lyricsRow !== undefined && !lines.length && plain && (
+          <FullText text={plain}>
+            <RefetchButton songId={songId} />
+          </FullText>
+        )}
+
+        {lyricsRow !== undefined && !lines.length && !plain && (
+          <Centered>
+            <div className="flex flex-col items-center gap-3">
+              <p className="text-ink-400 text-sm">
+                {lyricsRow === null ? 'Searching for lyrics…' : 'No synced lyrics found'}
+              </p>
+              {lyricsRow !== null && <RefetchButton songId={songId} />}
+            </div>
+          </Centered>
+        )}
+
+        {lines.length > 0 && mode === 'karaoke' && (
+          <KaraokeView lines={lines} activeIndex={activeIndex} onSeek={seek} />
+        )}
+        {lines.length > 0 && mode === 'full' && (
+          <FullView lines={lines} activeIndex={activeIndex} onSeek={seek} />
+        )}
+        {lines.length > 0 && mode === 'big' && (
+          <BigView lines={lines} activeIndex={activeIndex} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Mode pills ─────────────────────────────────────────────────────────
+
+function ModeSwitcher({ mode, onChange, disabled }) {
+  return (
+    <div className="flex justify-center gap-1 px-4 py-2">
+      {MODES.map(m => (
+        <button
+          key={m.id}
+          onClick={() => onChange(m.id)}
+          disabled={disabled}
+          className={
+            'px-3 py-1.5 rounded-full text-xs font-medium transition-colors disabled:opacity-30 ' +
+            (mode === m.id
+              ? 'bg-ink-100 text-ink-900'
+              : 'bg-ink-800 text-ink-300 hover:bg-ink-700')
+          }
+        >
+          {m.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// ─── Views ──────────────────────────────────────────────────────────────
+
+function KaraokeView({ lines, activeIndex, onSeek }) {
   const containerRef = useRef(null);
   useEffect(() => {
     const c = containerRef.current;
@@ -44,42 +118,8 @@ export default function Lyrics() {
     c.scrollTo({ top: targetTop, behavior: 'smooth' });
   }, [activeIndex]);
 
-  if (!songId) {
-    return null;
-  }
-
-  if (lyricsRow === undefined) {
-    return <Hint>Loading…</Hint>;
-  }
-
-  if (!lines.length && plain) {
-    return (
-      <div className="px-6 py-8 text-ink-300 leading-relaxed whitespace-pre-wrap text-lg">
-        <RefetchButton songId={songId} />
-        {plain}
-      </div>
-    );
-  }
-
-  if (!lines.length) {
-    // lyricsRow === null → row not written yet (LRCLIB fetch in flight).
-    // lyricsRow exists but has no synced + no plain → genuinely nothing found.
-    return (
-      <div className="flex flex-col items-center justify-center h-full gap-3">
-        <p className="text-ink-400 text-sm">
-          {lyricsRow === null ? 'Searching for lyrics…' : 'No synced lyrics found'}
-        </p>
-        {lyricsRow !== null && <RefetchButton songId={songId} />}
-      </div>
-    );
-  }
-
   return (
-    <div
-      ref={containerRef}
-      className="h-full overflow-y-auto no-scrollbar lyric-fade px-6"
-    >
-      {/* Top spacer so the first line can sit centered */}
+    <div ref={containerRef} className="h-full overflow-y-auto no-scrollbar lyric-fade px-6">
       <div className="h-[40vh]" aria-hidden />
       {lines.map((l, i) => {
         const isActive = i === activeIndex;
@@ -88,7 +128,7 @@ export default function Lyrics() {
           <p
             key={i}
             data-idx={i}
-            onClick={() => seek(l.time)}
+            onClick={() => onSeek(l.time)}
             className={
               'cursor-pointer text-2xl md:text-3xl font-semibold leading-snug py-2 transition-all duration-300 ' +
               (isActive
@@ -107,9 +147,62 @@ export default function Lyrics() {
   );
 }
 
-function Hint({ children }) {
+function FullView({ lines, activeIndex, onSeek }) {
+  // No auto-scroll, no centering — just a comfortable reading column. The
+  // active line still pops a little so you can find your place if you look
+  // up after reading ahead.
   return (
-    <div className="flex items-center justify-center h-full text-ink-400 text-sm">
+    <div className="h-full overflow-y-auto px-6 py-4">
+      {lines.map((l, i) => {
+        const isActive = i === activeIndex;
+        return (
+          <p
+            key={i}
+            onClick={() => onSeek(l.time)}
+            className={
+              'cursor-pointer text-base leading-relaxed py-1 transition-colors ' +
+              (isActive ? 'text-white font-medium' : 'text-ink-300 hover:text-ink-100')
+            }
+          >
+            {l.text || '♪'}
+          </p>
+        );
+      })}
+    </div>
+  );
+}
+
+function BigView({ lines, activeIndex }) {
+  // Active + next line, both huge. Designed for sing-along: no need to keep
+  // your eyes on a moving cursor, just two blocks of text.
+  const current = activeIndex >= 0 ? lines[activeIndex] : null;
+  const upcoming = lines[activeIndex + 1] || null;
+  return (
+    <div className="h-full flex flex-col items-center justify-center px-8 text-center gap-6">
+      <p className="text-3xl md:text-5xl font-bold leading-tight text-white">
+        {current?.text || (activeIndex < 0 ? '…' : '♪')}
+      </p>
+      {upcoming && (
+        <p className="text-xl md:text-2xl font-medium leading-snug text-ink-500">
+          {upcoming.text || '♪'}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function FullText({ text, children }) {
+  return (
+    <div className="px-6 py-6 text-ink-300 leading-relaxed whitespace-pre-wrap text-lg">
+      {children}
+      {text}
+    </div>
+  );
+}
+
+function Centered({ children }) {
+  return (
+    <div className="h-full flex items-center justify-center px-4 text-center">
       {children}
     </div>
   );

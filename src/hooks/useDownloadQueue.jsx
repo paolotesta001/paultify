@@ -106,6 +106,7 @@ export function DownloadQueueProvider({ children }) {
         duration: meta.duration,
         mimeType: 'audio/mpeg',
         blob: file,
+        coverBlob: meta.coverBlob,
         addedAt: Date.now()
       });
 

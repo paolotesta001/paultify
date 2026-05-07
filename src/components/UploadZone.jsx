@@ -50,6 +50,7 @@ export default function UploadZone() {
           duration: meta.duration,
           mimeType: audio.type || 'audio/mpeg',
           blob: audio,
+          coverBlob: meta.coverBlob,
           addedAt: Date.now()
         });
 

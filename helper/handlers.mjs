@@ -76,6 +76,11 @@ export async function handleDownload(req, res) {
       '--audio-format', 'mp3',
       '--audio-quality', '0',
       '--embed-metadata',
+      // --embed-thumbnail writes the YouTube thumbnail as ID3 cover art
+      // (APIC frame). --convert-thumbnails jpg normalizes formats — some
+      // YouTube thumbs are webp which old ID3 readers reject.
+      '--embed-thumbnail',
+      '--convert-thumbnails', 'jpg',
       '--no-playlist',
       '--no-warnings',
       '--quiet',
