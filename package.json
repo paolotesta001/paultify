@@ -9,7 +9,7 @@
     "preview": "vite preview --host",
     "icons": "node scripts/generate-icons.mjs",
     "helper": "node helper/server.mjs",
-    "deploy": "cross-env VITE_BASE=/paultify/ vite build && gh-pages -d dist --dotfiles -m \"Deploy\""
+    "deploy": "cross-env VITE_BASE=/paultify/ VITE_HELPER_BASE=https://desktop-s3e91si.taild5507a.ts.net vite build && gh-pages -d dist --dotfiles -m \"Deploy\""
   },
   "dependencies": {
     "dexie": "^4.0.10",
