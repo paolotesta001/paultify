@@ -2,7 +2,7 @@ import { apiUrl } from './config.js';
 
 // Deezer's public catalog API, accessed via the helper's /api/deezer/* proxy.
 
-async function deezer(path) {
+export async function deezer(path) {
   const r = await fetch(apiUrl(`/api/deezer/${path}`));
   if (!r.ok) throw new Error(`Deezer HTTP ${r.status}`);
   const data = await r.json();
@@ -36,4 +36,31 @@ export async function getAlbum(albumId) {
     ...album,
     tracks: album.tracks?.data || []
   };
+}
+
+// Best-effort track lookup. Used by the queue worker to fetch the official
+// duration + cover for a free-text Quick Add query. Returns null if no
+// result so the caller can gracefully fall back.
+export async function findTrack(artist, title) {
+  const q = encodeURIComponent(`${artist || ''} ${title || ''}`.trim());
+  if (!q) return null;
+  try {
+    const r = await deezer(`search/track?q=${q}&limit=1`);
+    return r.data?.[0] || null;
+  } catch {
+    return null;
+  }
+}
+
+// Fetch a Deezer cover image as a Blob via the helper proxy (direct fetch
+// would hit CORS). Returns null on any failure.
+export async function fetchCoverBlob(url) {
+  if (!url) return null;
+  try {
+    const r = await fetch(apiUrl(`/api/cover?url=${encodeURIComponent(url)}`));
+    if (!r.ok) return null;
+    return await r.blob();
+  } catch {
+    return null;
+  }
 }

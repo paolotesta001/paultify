@@ -109,7 +109,9 @@ export default function Discover() {
       id: track.id,
       title: track.title,
       artist: artistName,
-      album: track.album || null
+      album: track.album || null,
+      duration: track.duration || null,
+      coverUrl: track.album?.cover_xl || track.album?.cover_big || null
     });
   };
 
@@ -274,10 +276,13 @@ function DiscoverAlbumView({ album, onTrack }) {
   const { enqueue } = useDownloadQueue();
   if (!album) return null;
   const handleAddAll = () => {
+    const cover = album.cover_xl || album.cover_big;
     for (const t of album.tracks) {
       enqueue(`${album.artist?.name || ''} - ${t.title}`.trim(), {
         expectedArtist: album.artist?.name,
-        expectedTitle: t.title
+        expectedTitle: t.title,
+        expectedDuration: t.duration,
+        expectedCoverUrl: cover
       });
     }
   };

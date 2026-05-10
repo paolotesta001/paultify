@@ -6,15 +6,14 @@ import { useLyricsSync } from '../hooks/useLyricsSync.js';
 import { usePlayer } from '../hooks/usePlayer.jsx';
 import { refetchLyricsForSong } from '../lib/refetchLyrics.js';
 
-// Three lyric modes:
-//   karaoke  — one centered active line, others dimmed (the original)
-//   full     — all lines visible, scrollable, no auto-centering
-//   big      — only the active line + the next, displayed huge
+// Two modes:
+//   karaoke — auto-scrolling list, current line bright white, others dim
+//   big     — only the previous, current, and next lines, displayed huge
 //
-// Mode is picked by a small pill switcher above the lyrics.
+// "Full" mode was removed — the karaoke view already lets you scroll
+// freely (manual scroll pauses auto-follow for ~6s, then resumes).
 const MODES = [
   { id: 'karaoke', label: 'Karaoke' },
-  { id: 'full', label: 'Full' },
   { id: 'big', label: 'Big' }
 ];
 
@@ -49,9 +48,9 @@ export default function Lyrics({ initialMode = 'karaoke' }) {
         {lyricsRow === undefined && <Centered>Loading…</Centered>}
 
         {lyricsRow !== undefined && !lines.length && plain && (
-          <FullText text={plain}>
+          <PlainText text={plain}>
             <RefetchButton songId={songId} />
-          </FullText>
+          </PlainText>
         )}
 
         {lyricsRow !== undefined && !lines.length && !plain && (
@@ -67,9 +66,6 @@ export default function Lyrics({ initialMode = 'karaoke' }) {
 
         {lines.length > 0 && mode === 'karaoke' && (
           <KaraokeView lines={lines} activeIndex={activeIndex} onSeek={seek} />
-        )}
-        {lines.length > 0 && mode === 'full' && (
-          <FullView lines={lines} activeIndex={activeIndex} onSeek={seek} />
         )}
         {lines.length > 0 && mode === 'big' && (
           <BigView lines={lines} activeIndex={activeIndex} />
@@ -90,7 +86,7 @@ function ModeSwitcher({ mode, onChange, disabled }) {
           onClick={() => onChange(m.id)}
           disabled={disabled}
           className={
-            'px-3 py-1.5 rounded-full text-xs font-medium transition-colors disabled:opacity-30 ' +
+            'px-4 py-1.5 rounded-full text-xs font-semibold transition-colors disabled:opacity-30 ' +
             (mode === m.id
               ? 'bg-ink-100 text-ink-900'
               : 'bg-ink-800 text-ink-300 hover:bg-ink-700')
@@ -103,11 +99,41 @@ function ModeSwitcher({ mode, onChange, disabled }) {
   );
 }
 
-// ─── Views ──────────────────────────────────────────────────────────────
+// ─── Karaoke ────────────────────────────────────────────────────────────
 
 function KaraokeView({ lines, activeIndex, onSeek }) {
   const containerRef = useRef(null);
+  // Auto-scroll resumes ~6s after the user last touched the scroll. That
+  // way you can browse ahead without the rAF fighting your finger, but if
+  // you put your phone down it snaps back to the active line.
+  const lastUserScrollRef = useRef(0);
+  const [autoFollow, setAutoFollow] = useState(true);
+
+  // Manual scroll detection. We compare the current scrollTop to the value
+  // we last set programmatically; if they diverge, the user scrolled.
+  const programmaticTopRef = useRef(0);
+  const onScroll = () => {
+    const c = containerRef.current;
+    if (!c) return;
+    if (Math.abs(c.scrollTop - programmaticTopRef.current) > 4) {
+      lastUserScrollRef.current = Date.now();
+      setAutoFollow(false);
+    }
+  };
+
+  // Tick that re-arms autoFollow after the timeout.
   useEffect(() => {
+    if (autoFollow) return;
+    const id = setInterval(() => {
+      if (Date.now() - lastUserScrollRef.current >= 6000) {
+        setAutoFollow(true);
+      }
+    }, 1000);
+    return () => clearInterval(id);
+  }, [autoFollow]);
+
+  useEffect(() => {
+    if (!autoFollow) return;
     const c = containerRef.current;
     if (!c || activeIndex < 0) return;
     const active = c.querySelector(`[data-idx="${activeIndex}"]`);
@@ -115,11 +141,16 @@ function KaraokeView({ lines, activeIndex, onSeek }) {
     const cRect = c.getBoundingClientRect();
     const aRect = active.getBoundingClientRect();
     const targetTop = c.scrollTop + (aRect.top - cRect.top) - cRect.height / 2 + aRect.height / 2;
+    programmaticTopRef.current = targetTop;
     c.scrollTo({ top: targetTop, behavior: 'smooth' });
-  }, [activeIndex]);
+  }, [activeIndex, autoFollow]);
 
   return (
-    <div ref={containerRef} className="h-full overflow-y-auto no-scrollbar lyric-fade px-6">
+    <div
+      ref={containerRef}
+      onScroll={onScroll}
+      className="h-full overflow-y-auto no-scrollbar lyric-fade px-6"
+    >
       <div className="h-[40vh]" aria-hidden />
       {lines.map((l, i) => {
         const isActive = i === activeIndex;
@@ -128,14 +159,18 @@ function KaraokeView({ lines, activeIndex, onSeek }) {
           <p
             key={i}
             data-idx={i}
-            onClick={() => onSeek(l.time)}
+            onClick={() => {
+              onSeek(l.time);
+              // Treating tap-to-seek as a "follow me" gesture.
+              setAutoFollow(true);
+            }}
             className={
-              'cursor-pointer text-2xl md:text-3xl font-semibold leading-snug py-2 transition-all duration-300 ' +
+              'cursor-pointer text-2xl md:text-3xl leading-snug py-2 transition-colors duration-200 ' +
               (isActive
-                ? 'text-white scale-[1.02]'
+                ? 'text-white font-bold'
                 : isPast
-                  ? 'text-ink-500'
-                  : 'text-ink-400')
+                  ? 'text-ink-600 font-medium'
+                  : 'text-ink-400 font-medium')
             }
           >
             {l.text || '♪'}
@@ -147,51 +182,30 @@ function KaraokeView({ lines, activeIndex, onSeek }) {
   );
 }
 
-function FullView({ lines, activeIndex, onSeek }) {
-  // No auto-scroll, no centering — just a comfortable reading column. The
-  // active line still pops a little so you can find your place if you look
-  // up after reading ahead.
-  return (
-    <div className="h-full overflow-y-auto px-6 py-4">
-      {lines.map((l, i) => {
-        const isActive = i === activeIndex;
-        return (
-          <p
-            key={i}
-            onClick={() => onSeek(l.time)}
-            className={
-              'cursor-pointer text-base leading-relaxed py-1 transition-colors ' +
-              (isActive ? 'text-white font-medium' : 'text-ink-300 hover:text-ink-100')
-            }
-          >
-            {l.text || '♪'}
-          </p>
-        );
-      })}
-    </div>
-  );
-}
+// ─── Big mode (prev / current / next, full screen) ──────────────────────
 
 function BigView({ lines, activeIndex }) {
-  // Active + next line, both huge. Designed for sing-along: no need to keep
-  // your eyes on a moving cursor, just two blocks of text.
+  const prev = activeIndex - 1 >= 0 ? lines[activeIndex - 1] : null;
   const current = activeIndex >= 0 ? lines[activeIndex] : null;
   const upcoming = lines[activeIndex + 1] || null;
   return (
-    <div className="h-full flex flex-col items-center justify-center px-8 text-center gap-6">
-      <p className="text-3xl md:text-5xl font-bold leading-tight text-white">
+    <div className="h-full flex flex-col items-center justify-center px-6 text-center gap-6 select-none">
+      <p className="text-2xl md:text-3xl font-medium leading-tight text-ink-500">
+        {prev?.text || ''}
+      </p>
+      <p className="text-4xl md:text-6xl font-bold leading-tight text-white">
         {current?.text || (activeIndex < 0 ? '…' : '♪')}
       </p>
-      {upcoming && (
-        <p className="text-xl md:text-2xl font-medium leading-snug text-ink-500">
-          {upcoming.text || '♪'}
-        </p>
-      )}
+      <p className="text-2xl md:text-3xl font-medium leading-tight text-ink-500">
+        {upcoming?.text || ''}
+      </p>
     </div>
   );
 }
 
-function FullText({ text, children }) {
+// ─── Atoms ──────────────────────────────────────────────────────────────
+
+function PlainText({ text, children }) {
   return (
     <div className="px-6 py-6 text-ink-300 leading-relaxed whitespace-pre-wrap text-lg">
       {children}

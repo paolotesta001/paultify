@@ -7,6 +7,7 @@ import DownloadQueue from './components/DownloadQueue.jsx';
 import BottomTabs from './components/BottomTabs.jsx';
 import Home from './components/Home.jsx';
 import Search from './components/Search.jsx';
+import Add from './components/Add.jsx';
 import Playlists from './components/Playlists.jsx';
 import PlaylistView from './components/PlaylistView.jsx';
 import ArtistView from './components/ArtistView.jsx';
@@ -83,6 +84,15 @@ export default function App() {
     content = <Home onOpen={openTarget} onPlay={showPlayer} />;
   } else if (tab === 'search') {
     content = <Search />;
+  } else if (tab === 'add') {
+    // After a Spotify import, jump straight into the new playlist so the
+    // user sees songs landing in real time.
+    content = (
+      <Add onSpotifyImported={id => {
+        setTab('playlists');
+        setSub({ kind: 'playlist', id });
+      }} />
+    );
   } else if (tab === 'playlists') {
     content = (
       <Playlists onOpen={id => setSub({ kind: 'playlist', id })} />

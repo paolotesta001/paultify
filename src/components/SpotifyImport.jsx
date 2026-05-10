@@ -52,11 +52,14 @@ export default function SpotifyImport({ onImported }) {
       const playlistId = await createPlaylist(playlistName);
 
       for (const track of details.tracks) {
-        // yt-dlp's ytsearch1 gets the best match for "Artist - Title".
+        // yt-dlp picks the best match for "Artist - Title". The queue worker
+        // will Deezer-search to find the album cover (Spotify embed scrape
+        // doesn't give us cover URLs).
         enqueue(`${track.artist} - ${track.title}`, {
           playlistId,
           expectedArtist: track.artist,
-          expectedTitle: track.title
+          expectedTitle: track.title,
+          expectedDuration: track.duration
         });
       }
 

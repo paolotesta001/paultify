@@ -54,10 +54,12 @@ export function readBody(req) {
 }
 
 export async function handleDownload(req, res) {
-  let query;
+  let query, expectedDuration;
   try {
     const body = await readBody(req);
-    query = JSON.parse(body).query;
+    const parsed = JSON.parse(body);
+    query = parsed.query;
+    expectedDuration = Number.isFinite(parsed.duration) ? parsed.duration : null;
   } catch {
     sendJson(res, 400, { error: 'invalid body' });
     return;
@@ -67,7 +69,14 @@ export async function handleDownload(req, res) {
     return;
   }
   const trimmed = query.trim();
-  const target = /^https?:\/\//i.test(trimmed) ? trimmed : `ytsearch1:${trimmed}`;
+  const isUrl = /^https?:\/\//i.test(trimmed);
+  // ytsearch5 + match-filter lets yt-dlp skip past the 4:42 music video
+  // for a song that's actually 4:23. With no expected duration we just bias
+  // toward typical song lengths.
+  const target = isUrl ? trimmed : `ytsearch5:${trimmed}`;
+  const filter = expectedDuration
+    ? `duration > ${Math.max(30, Math.round(expectedDuration - 15))} & duration < ${Math.round(expectedDuration + 15)}`
+    : 'duration > 60 & duration < 720';
 
   const dir = await mkdtemp(join(tmpdir(), 'lyric-dl-'));
   try {
@@ -76,14 +85,15 @@ export async function handleDownload(req, res) {
       '--audio-format', 'mp3',
       '--audio-quality', '0',
       '--embed-metadata',
-      // --embed-thumbnail writes the YouTube thumbnail as ID3 cover art
-      // (APIC frame). --convert-thumbnails jpg normalizes formats — some
-      // YouTube thumbs are webp which old ID3 readers reject.
-      '--embed-thumbnail',
-      '--convert-thumbnails', 'jpg',
+      // NOTE: deliberately NOT embedding the YouTube thumbnail. The
+      // thumbnail-embed pipeline re-muxes the MP3 through ffmpeg and can
+      // alter the LAME info header, which shifts where browsers think
+      // audio starts and breaks lyrics sync. We get cover art from
+      // Deezer's catalog instead (see /api/cover).
       '--no-playlist',
       '--no-warnings',
       '--quiet',
+      '--match-filter', filter,
       '-o', join(dir, '%(title).150B.%(ext)s'),
       '--', target
     ];
@@ -176,6 +186,38 @@ export async function handleSpotify(req, res) {
   }
 }
 
+// Proxies Deezer's image CDN so the client can store cover art as a Blob
+// in IndexedDB. Direct fetch from the browser would be blocked by CORS.
+// Locked to Deezer's hostnames so this can't be abused as a generic web
+// proxy.
+export async function handleCover(req, res) {
+  const url = new URL(req.url, 'http://x').searchParams.get('url');
+  if (!url || !/^https:\/\/(?:e-)?cdns?-images\.dzcdn\.net\//.test(url)) {
+    sendJson(res, 400, { error: 'expected a Deezer cdn URL' });
+    return;
+  }
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 8000);
+    const r = await fetch(url, { signal: ctrl.signal });
+    clearTimeout(t);
+    if (!r.ok) {
+      sendJson(res, r.status, { error: `cover fetch ${r.status}` });
+      return;
+    }
+    const buf = Buffer.from(await r.arrayBuffer());
+    res.writeHead(200, {
+      ...corsHeaders(),
+      'Content-Type': r.headers.get('content-type') || 'image/jpeg',
+      'Content-Length': buf.length,
+      'Cache-Control': 'public, max-age=86400'
+    });
+    res.end(buf);
+  } catch (err) {
+    sendJson(res, 502, { error: err.message || 'cover fetch failed' });
+  }
+}
+
 export async function handleDeezer(req, res) {
   // Subpath is whatever follows '/api/deezer/' (with query string).
   const subpath = req.url.slice(req.url.indexOf('/api/deezer/') + '/api/deezer/'.length);
@@ -227,6 +269,10 @@ export async function dispatch(req, res) {
   }
   if (req.method === 'GET' && path.startsWith('/api/deezer/')) {
     await handleDeezer(req, res);
+    return true;
+  }
+  if (req.method === 'GET' && path === '/api/cover') {
+    await handleCover(req, res);
     return true;
   }
   return false;

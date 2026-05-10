@@ -4,6 +4,7 @@ import { addSong, db, setLyrics } from '../db/database.js';
 import { extractMetadata } from '../lib/metadata.js';
 import { fetchLyricsFromLrclib } from '../lib/lrclib.js';
 import { addSongToPlaylist } from '../lib/playlists.js';
+import { findTrack, fetchCoverBlob } from '../lib/discover.js';
 
 // A non-blocking download queue. Enqueue many songs; the worker pulls up to
 // MAX_CONCURRENT items at a time so the user isn't held hostage by a slow
@@ -31,6 +32,12 @@ function reducer(items, action) {
           playlistId: action.playlistId || null,
           expectedTitle: action.expectedTitle || null,
           expectedArtist: action.expectedArtist || null,
+          // Studio duration (Deezer). yt-dlp filters candidate videos by
+          // ±15s of this so we get the audio version, not the music video.
+          expectedDuration: action.expectedDuration || null,
+          // Album cover URL (Deezer CDN). Fetched as a Blob after download
+          // and persisted alongside the song.
+          expectedCoverUrl: action.expectedCoverUrl || null,
           title: action.expectedTitle || null,
           artist: action.expectedArtist || null
         }
@@ -70,7 +77,7 @@ export function DownloadQueueProvider({ children }) {
   // Stable processor — never re-created, so the worker effect's identity
   // doesn't churn. dispatch from useReducer is also stable.
   const processItem = useCallback(async (id, query, opts = {}) => {
-    const { playlistId, expectedTitle, expectedArtist } = opts;
+    let { playlistId, expectedTitle, expectedArtist, expectedDuration, expectedCoverUrl } = opts;
     try {
       // Dedup pass — if Spotify gave us "Artist + Title" and we already have
       // an exact match in the library, skip the download entirely and just
@@ -92,11 +99,44 @@ export function DownloadQueueProvider({ children }) {
         }
       }
 
+      // Enrichment: for free-text Quick Add we have no Deezer track yet.
+      // Look it up so yt-dlp can apply the duration filter and so we have
+      // a real album cover URL by the time the audio finishes downloading.
+      if (!expectedDuration && !/^https?:\/\//i.test(query)) {
+        const t = await findTrack(expectedArtist || '', expectedTitle || query);
+        if (t) {
+          expectedDuration = expectedDuration || t.duration;
+          expectedCoverUrl = expectedCoverUrl || t.album?.cover_xl || t.album?.cover_big;
+          expectedTitle = expectedTitle || t.title;
+          expectedArtist = expectedArtist || t.artist?.name;
+          dispatch({
+            type: 'update', id, patch: {
+              title: expectedTitle, artist: expectedArtist
+            }
+          });
+        }
+      }
+
       dispatch({ type: 'update', id, patch: { status: 'downloading' } });
-      const file = await downloadFromYoutube(query);
+      const file = await downloadFromYoutube(query, { duration: expectedDuration });
 
       dispatch({ type: 'update', id, patch: { status: 'parsing' } });
       const meta = await extractMetadata(file);
+
+      // Cover priority: Deezer (real album art) → ID3 embedded → none.
+      // We prefer Deezer because yt-dlp downloads no longer carry ID3 cover
+      // (we removed --embed-thumbnail to keep audio timing intact).
+      let coverBlob = null;
+      if (expectedCoverUrl) {
+        coverBlob = await fetchCoverBlob(expectedCoverUrl);
+      }
+      if (!coverBlob && (meta.artist && meta.title)) {
+        const t = await findTrack(meta.artist, meta.title);
+        const url = t?.album?.cover_xl || t?.album?.cover_big;
+        if (url) coverBlob = await fetchCoverBlob(url);
+      }
+      coverBlob = coverBlob || meta.coverBlob || null;
+
       const songId = crypto.randomUUID();
       await addSong({
         id: songId,
@@ -106,7 +146,7 @@ export function DownloadQueueProvider({ children }) {
         duration: meta.duration,
         mimeType: 'audio/mpeg',
         blob: file,
-        coverBlob: meta.coverBlob,
+        coverBlob,
         addedAt: Date.now()
       });
 
@@ -147,7 +187,9 @@ export function DownloadQueueProvider({ children }) {
         processItem(item.id, item.query, {
           playlistId: item.playlistId,
           expectedTitle: item.expectedTitle,
-          expectedArtist: item.expectedArtist
+          expectedArtist: item.expectedArtist,
+          expectedDuration: item.expectedDuration,
+          expectedCoverUrl: item.expectedCoverUrl
         });
       }
     }
@@ -161,7 +203,9 @@ export function DownloadQueueProvider({ children }) {
       query: q,
       playlistId: opts.playlistId,
       expectedTitle: opts.expectedTitle,
-      expectedArtist: opts.expectedArtist
+      expectedArtist: opts.expectedArtist,
+      expectedDuration: opts.expectedDuration,
+      expectedCoverUrl: opts.expectedCoverUrl
     });
   }, []);
 

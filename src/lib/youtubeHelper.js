@@ -18,11 +18,14 @@ export async function checkHelperHealth() {
 
 // Returns a File so the existing upload pipeline (metadata extraction →
 // addSong → LRCLIB) handles it without modification.
-export async function downloadFromYoutube(query, { signal } = {}) {
+//
+// `duration` (in seconds) is passed through to yt-dlp's --match-filter so
+// it picks the studio version, not the music video with the long intro.
+export async function downloadFromYoutube(query, { signal, duration } = {}) {
   const r = await fetch(apiUrl('/api/download'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ query }),
+    body: JSON.stringify({ query, duration: duration ?? null }),
     signal
   });
   if (!r.ok) {

@@ -23,9 +23,16 @@ const ListIcon = ({ active }) => (
   </svg>
 );
 
+const PlusIcon = ({ active }) => (
+  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={active ? 2.5 : 2} strokeLinecap="round">
+    <path d="M12 5v14M5 12h14" />
+  </svg>
+);
+
 const TABS = [
   { id: 'home', label: 'Home', Icon: HomeIcon },
   { id: 'search', label: 'Search', Icon: SearchIcon },
+  { id: 'add', label: 'Add', Icon: PlusIcon },
   { id: 'playlists', label: 'Playlists', Icon: ListIcon }
 ];
 

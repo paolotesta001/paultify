@@ -37,7 +37,9 @@ export default function SongActionSheet({ track, onClose }) {
   const handleDownload = () => {
     enqueue(query, {
       expectedArtist: track.artist,
-      expectedTitle: track.title
+      expectedTitle: track.title,
+      expectedDuration: track.duration,
+      expectedCoverUrl: track.coverUrl
     });
     setFeedback('Added to download queue');
     setTimeout(onClose, 700);
@@ -146,7 +148,9 @@ function PickPlaylist({ track, query, onPicked, onBack }) {
       enqueue(query, {
         playlistId,
         expectedArtist: track.artist,
-        expectedTitle: track.title
+        expectedTitle: track.title,
+        expectedDuration: track.duration,
+        expectedCoverUrl: track.coverUrl
       });
     }
     onPicked();
