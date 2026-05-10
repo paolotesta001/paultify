@@ -2,7 +2,10 @@ import { useEffect, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db/database.js';
 import { useDownloadQueue } from '../hooks/useDownloadQueue.jsx';
+import { usePlayer } from '../hooks/usePlayer.jsx';
 import { addSongToPlaylist, createPlaylist } from '../lib/playlists.js';
+import { streamUrl } from '../lib/streamHelper.js';
+import { fetchLyricsFromLrclib } from '../lib/lrclib.js';
 import { Music } from './Icons.jsx';
 
 // Bottom-sheet menu shown when the user taps "⋮" on a search result.
@@ -18,8 +21,9 @@ import { Music } from './Icons.jsx';
 // Why a sheet instead of a popover? Sheets sit above the bottom-tab nav,
 // keep the touch target large, and match the iOS "more options" pattern
 // the user already knows from Spotify / Apple Music.
-export default function SongActionSheet({ track, onClose }) {
+export default function SongActionSheet({ track, onClose, onListen }) {
   const { enqueue } = useDownloadQueue();
+  const { loadStream } = usePlayer();
   const [view, setView] = useState('main'); // 'main' | 'pickPlaylist'
   const [feedback, setFeedback] = useState(null);
 
@@ -43,6 +47,49 @@ export default function SongActionSheet({ track, onClose }) {
     });
     setFeedback('Added to download queue');
     setTimeout(onClose, 700);
+  };
+
+  // Stream right now — no save. We start playback first, then fetch LRC
+  // lyrics in the background so they're ready by the time the user opens
+  // the lyrics window.
+  const handleListen = async () => {
+    setFeedback('Streaming…');
+    const url = streamUrl(query, track.duration);
+    await loadStream(url, {
+      title: track.title,
+      artist: track.artist,
+      album: track.album?.title || null,
+      duration: track.duration,
+      coverUrl: track.coverUrl,
+      streamQuery: query
+    });
+    // Background: pull synced lyrics with the same artist+title we'd use
+    // post-download, no DB write.
+    fetchLyricsFromLrclib({
+      artist: track.artist,
+      title: track.title,
+      duration: track.duration
+    }).then(r => {
+      if (r) {
+        // Stash on currentSong so Lyrics.jsx can read it. We use loadStream
+        // again with an updated meta — same audio src, just fresh metadata.
+        loadStream(url, {
+          title: track.title,
+          artist: track.artist,
+          album: track.album?.title || null,
+          duration: track.duration,
+          coverUrl: track.coverUrl,
+          streamQuery: query,
+          streamLyrics: {
+            lrcText: r.syncedLyrics || null,
+            plainText: r.plainLyrics || null,
+            source: 'lrclib'
+          }
+        }, { autoplay: false });
+      }
+    }).catch(() => {});
+    onListen?.();
+    onClose();
   };
 
   return (
@@ -82,6 +129,7 @@ export default function SongActionSheet({ track, onClose }) {
 
         {view === 'main' && (
           <ul className="py-2">
+            <Action icon="▶" label="Listen now (stream)" onClick={handleListen} disabled={!!feedback} />
             <Action icon="↓" label="Download" onClick={handleDownload} disabled={!!feedback} />
             <Action icon="＋" label="Add to a playlist" onClick={() => setView('pickPlaylist')} disabled={!!feedback} />
           </ul>

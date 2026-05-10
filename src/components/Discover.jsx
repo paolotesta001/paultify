@@ -9,7 +9,7 @@ import SongActionSheet from './SongActionSheet.jsx';
 // the user's mental model is "tap the song to do something with it", which
 // matches Spotify / Apple Music exactly.
 
-export default function Discover() {
+export default function Discover({ onPlay }) {
   const [helperOk, setHelperOk] = useState(null);
   const [query, setQuery] = useState('');
   const [view, setView] = useState({ kind: 'overview' });
@@ -171,6 +171,7 @@ export default function Discover() {
         <SongActionSheet
           track={activeTrack}
           onClose={() => setActiveTrack(null)}
+          onListen={onPlay}
         />
       )}
     </div>

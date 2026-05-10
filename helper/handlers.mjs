@@ -186,6 +186,82 @@ export async function handleSpotify(req, res) {
   }
 }
 
+// Streams audio directly from yt-dlp's stdout into the HTTP response — no
+// disk file, no full download wait. Browsers play it as it arrives.
+//
+// We deliberately request bestaudio (m4a / opus) WITHOUT mp3 transcoding so
+// playback can start in ~1-2s instead of waiting for ffmpeg to fill an mp3
+// buffer. iOS Safari and every modern desktop browser handle m4a (AAC).
+export async function handleStream(req, res) {
+  const u = new URL(req.url, 'http://x');
+  const query = u.searchParams.get('q');
+  const duration = parseInt(u.searchParams.get('d'), 10);
+  if (!query || query.length > MAX_QUERY) {
+    sendJson(res, 400, { error: 'invalid query' });
+    return;
+  }
+  const trimmed = query.trim();
+  const isUrl = /^https?:\/\//i.test(trimmed);
+  const target = isUrl ? trimmed : `ytsearch5:${trimmed}`;
+  const filter = Number.isFinite(duration)
+    ? `duration > ${Math.max(30, duration - 15)} & duration < ${duration + 15}`
+    : 'duration > 60 & duration < 720';
+
+  const args = [
+    // Prefer m4a; fall back to whatever bestaudio is. No transcode.
+    '-f', 'bestaudio[ext=m4a]/bestaudio',
+    '--no-playlist',
+    '--no-warnings',
+    '--quiet',
+    '--match-filter', filter,
+    '-o', '-',
+    '--', target
+  ];
+
+  let proc;
+  try {
+    proc = spawn('yt-dlp', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+  } catch (err) {
+    sendJson(res, 500, { error: err.code === 'ENOENT' ? 'yt-dlp not on PATH' : err.message });
+    return;
+  }
+
+  let headersSent = false;
+  let stderr = '';
+  proc.stderr.on('data', c => { stderr += c.toString(); });
+
+  // Send headers on the first byte so browsers can start buffering. Until
+  // then, errors translate to a JSON error response.
+  proc.stdout.once('data', () => {
+    headersSent = true;
+    res.writeHead(200, {
+      ...corsHeaders(),
+      // mp4/aac container; works for m4a/opus/etc in practice across browsers.
+      'Content-Type': 'audio/mp4',
+      'Cache-Control': 'no-cache',
+      'X-Stream': '1'
+    });
+  });
+  proc.stdout.pipe(res);
+
+  proc.on('close', code => {
+    if (code !== 0 && !headersSent) {
+      sendJson(res, 502, {
+        error: stderr.trim().split('\n').pop()?.slice(0, 300) || 'stream failed'
+      });
+    }
+  });
+  proc.on('error', err => {
+    if (!headersSent) sendJson(res, 500, { error: err.message });
+  });
+
+  // If the client disconnects (user skipped, closed tab), terminate yt-dlp
+  // so we don't keep YouTube traffic going for a stream nobody listens to.
+  res.on('close', () => {
+    if (!proc.killed) proc.kill('SIGKILL');
+  });
+}
+
 // Proxies Deezer's image CDN so the client can store cover art as a Blob
 // in IndexedDB. Direct fetch from the browser would be blocked by CORS.
 // Locked to Deezer's hostnames so this can't be abused as a generic web
@@ -273,6 +349,10 @@ export async function dispatch(req, res) {
   }
   if (req.method === 'GET' && path === '/api/cover') {
     await handleCover(req, res);
+    return true;
+  }
+  if (req.method === 'GET' && path === '/api/stream') {
+    await handleStream(req, res);
     return true;
   }
   return false;

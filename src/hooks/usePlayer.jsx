@@ -102,6 +102,39 @@ export function PlayerProvider({ children }) {
     await loadSong(songIds[startIndex]);
   }, [loadSong]);
 
+  // Stream a song from a URL without persisting to IndexedDB. The caller
+  // provides a metadata bag (title/artist/coverUrl/duration) and optional
+  // pre-fetched LRC lyrics in `streamLyrics`. The track has no DB id.
+  const loadStream = useCallback(async (url, meta = {}, { autoplay = true } = {}) => {
+    const audio = audioRef.current;
+    transitioningRef.current = true;
+    revokeUrl();
+    revokeCover();
+    objectUrlRef.current = null;
+    audio.src = url;
+    audio.load();
+    setCurrentSong({
+      id: null,
+      isStream: true,
+      streamQuery: meta.streamQuery || null,
+      title: meta.title || 'Streaming',
+      artist: meta.artist || '',
+      album: meta.album || null,
+      duration: meta.duration || 0,
+      coverUrl: meta.coverUrl || null,
+      streamLyrics: meta.streamLyrics || null
+    });
+    setDuration(meta.duration || 0);
+    setQueue([]);
+    if (autoplay) {
+      try {
+        await audio.play();
+        wasPlayingRef.current = true;
+      } catch {}
+    }
+    transitioningRef.current = false;
+  }, []);
+
   const togglePlay = useCallback(async () => {
     const audio = audioRef.current;
     if (!audio.src) return;
@@ -325,6 +358,7 @@ export function PlayerProvider({ children }) {
     queue,
     shuffle,
     loadSong,
+    loadStream,
     playFromQueue,
     togglePlay,
     seek,
@@ -332,7 +366,7 @@ export function PlayerProvider({ children }) {
     prev,
     stop,
     toggleShuffle
-  }), [currentSong, isPlaying, duration, queue, shuffle, loadSong, playFromQueue, togglePlay, seek, next, prev, stop, toggleShuffle]);
+  }), [currentSong, isPlaying, duration, queue, shuffle, loadSong, loadStream, playFromQueue, togglePlay, seek, next, prev, stop, toggleShuffle]);
 
   return <PlayerCtx.Provider value={value}>{children}</PlayerCtx.Provider>;
 }

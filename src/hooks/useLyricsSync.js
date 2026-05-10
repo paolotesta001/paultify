@@ -10,10 +10,18 @@ import { findActiveIndex } from '../lib/lrcParser.js';
 // We keep React renders cheap by ONLY calling setState when `activeIndex`
 // actually changes (typically once every several seconds). The fast path
 // stays in plain JS.
-export function useLyricsSync(audioRef, lines) {
+//
+// `offset` (seconds) shifts the timing of every line. Positive means
+// lyrics appear later than the LRC says; negative means earlier. Used by
+// the manual resync UI when LRCLIB's timing is slightly off.
+export function useLyricsSync(audioRef, lines, offset = 0) {
   const [activeIndex, setActiveIndex] = useState(-1);
   const lastIndexRef = useRef(-1);
   const rafRef = useRef(0);
+  // Live offset captured in a ref so the rAF loop doesn't tear down/build
+  // up on every nudge. Each tick reads the current value.
+  const offsetRef = useRef(offset);
+  useEffect(() => { offsetRef.current = offset; }, [offset]);
 
   useEffect(() => {
     // Reset when lyrics change.
@@ -25,7 +33,7 @@ export function useLyricsSync(audioRef, lines) {
     if (!audio) return;
 
     const tick = () => {
-      const t = audio.currentTime;
+      const t = audio.currentTime - offsetRef.current;
       const idx = findActiveIndex(lines, t);
       if (idx !== lastIndexRef.current) {
         lastIndexRef.current = idx;

@@ -18,6 +18,8 @@ const Ctx = createContext(null);
 
 function reducer(items, action) {
   switch (action.type) {
+    case 'hydrate':
+      return action.items;
     case 'enqueue':
       return [
         ...items,
@@ -53,6 +55,32 @@ function reducer(items, action) {
   }
 }
 
+// Mirror in-memory queue state to Dexie so the queue survives a tab close.
+// We never persist the audio Blob through the queue — once a download
+// finishes, the song lives in the songs table and the queue row is dropped.
+async function persistQueue(items) {
+  try {
+    // Skip transient "done" items — they auto-remove from memory anyway,
+    // and we don't want them resurrecting after a refresh.
+    const toStore = items.filter(it => it.status !== 'done');
+    await db.transaction('rw', db.queue, async () => {
+      await db.queue.clear();
+      if (toStore.length) await db.queue.bulkPut(toStore);
+    });
+  } catch {
+    // Queue persistence is best-effort. Failures (storage full, etc.)
+    // shouldn't block the actual downloads.
+  }
+}
+
+// Re-arm any item that was downloading/parsing/lyrics when the tab last
+// closed — we lost the work in flight, so move it back to 'queued' for a
+// fresh attempt.
+function rehydrate(rows) {
+  const STALE = new Set(['downloading', 'parsing', 'lyrics']);
+  return rows.map(r => STALE.has(r.status) ? { ...r, status: 'queued' } : r);
+}
+
 // Case-insensitive exact match on artist + title against the songs table.
 // Used for dedup when importing a Spotify playlist that overlaps with
 // what's already in the library.
@@ -73,6 +101,27 @@ async function findExistingSong(artist, title) {
 export function DownloadQueueProvider({ children }) {
   const [items, dispatch] = useReducer(reducer, []);
   const inFlightRef = useRef(new Set());
+  const hydratedRef = useRef(false);
+
+  // On boot, pull any leftover queue rows from IDB and re-arm them. The
+  // worker effect below will pick them up like a fresh enqueue.
+  useEffect(() => {
+    (async () => {
+      try {
+        const rows = await db.queue.orderBy('createdAt').toArray();
+        if (rows.length) dispatch({ type: 'hydrate', items: rehydrate(rows) });
+      } finally {
+        hydratedRef.current = true;
+      }
+    })();
+  }, []);
+
+  // Mirror state changes back to IDB. Skipped until the initial hydrate
+  // completes so we don't blow away unread rows with an empty array.
+  useEffect(() => {
+    if (!hydratedRef.current) return;
+    persistQueue(items);
+  }, [items]);
 
   // Stable processor — never re-created, so the worker effect's identity
   // doesn't churn. dispatch from useReducer is also stable.

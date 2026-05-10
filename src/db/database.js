@@ -33,6 +33,17 @@ db.version(3).stores({
   playlists: 'id, name, createdAt'
 });
 
+// v4: persistent download queue. When the tab closes mid-batch, queue
+// items survive so the worker can resume on next boot. lyrics rows gain
+// an optional `offset` field (no schema change needed for that — Dexie
+// stores arbitrary properties — but we keep the indexes the same).
+db.version(4).stores({
+  songs: 'id, title, artist, album, addedAt, lastPlayedAt',
+  lyrics: 'songId, source',
+  playlists: 'id, name, createdAt',
+  queue: 'id, status, createdAt'
+});
+
 export async function addSong(record) {
   await db.songs.add(record);
 }

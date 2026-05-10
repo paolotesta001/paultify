@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { usePlayer } from '../hooks/usePlayer.jsx';
+import { useDownloadQueue } from '../hooks/useDownloadQueue.jsx';
 import Controls from './Controls.jsx';
 import ProgressBar from './ProgressBar.jsx';
 import Lyrics from './Lyrics.jsx';
@@ -11,9 +12,24 @@ import { Music } from './Icons.jsx';
 // straight to the album art (no scroll-up frustration).
 export default function Player({ onClose }) {
   const { currentSong } = usePlayer();
+  const { enqueue } = useDownloadQueue();
   const [lyricsOpen, setLyricsOpen] = useState(false);
+  const [savedFlash, setSavedFlash] = useState(false);
 
   if (!currentSong) return null;
+
+  // Streamed track: lives only in memory; user can hit "Save" to enqueue
+  // a real download into the library.
+  const handleSave = () => {
+    if (!currentSong.streamQuery) return;
+    enqueue(currentSong.streamQuery, {
+      expectedTitle: currentSong.title,
+      expectedArtist: currentSong.artist,
+      expectedDuration: currentSong.duration
+    });
+    setSavedFlash(true);
+    setTimeout(() => setSavedFlash(false), 1500);
+  };
 
   return (
     <div
@@ -32,9 +48,19 @@ export default function Player({ onClose }) {
           ✕
         </button>
         <span className="text-[10px] uppercase tracking-widest text-ink-500">
-          Now Playing
+          {currentSong.isStream ? 'Streaming' : 'Now Playing'}
         </span>
-        <div className="w-10" />
+        {currentSong.isStream ? (
+          <button
+            onClick={handleSave}
+            disabled={savedFlash}
+            className="px-3 h-10 flex items-center text-xs font-semibold text-accent active:text-accent-dim"
+          >
+            {savedFlash ? '✓ Saving' : '↓ Save'}
+          </button>
+        ) : (
+          <div className="w-10" />
+        )}
       </header>
 
       <div className="flex-1 flex items-center justify-center min-h-0 px-5">

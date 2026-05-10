@@ -83,7 +83,7 @@ export default function App() {
   } else if (tab === 'home') {
     content = <Home onOpen={openTarget} onPlay={showPlayer} />;
   } else if (tab === 'search') {
-    content = <Search />;
+    content = <Search onPlay={showPlayer} />;
   } else if (tab === 'add') {
     // After a Spotify import, jump straight into the new playlist so the
     // user sees songs landing in real time.
