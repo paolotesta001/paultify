@@ -30,6 +30,19 @@ export function PlayerProvider({ children }) {
   const [shuffle, setShuffle] = useState(false);
   const objectUrlRef = useRef(null);
   const coverUrlRef = useRef(null);
+  // Tracks whether the user *wants* music playing. Set when they tap play
+  // or load a song; cleared when they tap pause / stop. Drives the auto-
+  // resume after iOS interrupts us for a notification or focus change.
+  const wasPlayingRef = useRef(false);
+  // Distinguishes "user tapped pause" from "system paused us". Cleared on
+  // every play event so a subsequent system pause won't be mistaken for a
+  // user pause.
+  const userPauseRef = useRef(false);
+  // Set during loadSong's src swap so the pause event fired by the audio
+  // element's source replacement doesn't trigger an erroneous auto-resume.
+  const transitioningRef = useRef(false);
+  // Bounds the auto-resume retry burst when iOS keeps yanking the audio.
+  const resumeAttemptsRef = useRef(0);
 
   // ─── helpers ───────────────────────────────────────────────────────────
   const revokeUrl = () => {
@@ -52,6 +65,7 @@ export function PlayerProvider({ children }) {
     const row = await getSong(songId);
     if (!row || !row.blob) return;
 
+    transitioningRef.current = true;
     revokeUrl();
     revokeCover();
     const url = URL.createObjectURL(row.blob);
@@ -74,10 +88,12 @@ export function PlayerProvider({ children }) {
     if (autoplay) {
       try {
         await audio.play();
+        wasPlayingRef.current = true;
       } catch {
         // autoplay blocked — user must tap play
       }
     }
+    transitioningRef.current = false;
   }, []);
 
   // ─── public methods ────────────────────────────────────────────────────
@@ -90,8 +106,15 @@ export function PlayerProvider({ children }) {
     const audio = audioRef.current;
     if (!audio.src) return;
     if (audio.paused) {
-      try { await audio.play(); } catch {}
+      try {
+        await audio.play();
+        wasPlayingRef.current = true;
+      } catch {}
     } else {
+      // Mark this as user-intent BEFORE pausing so the pause-event handler
+      // doesn't try to auto-resume us a second later.
+      userPauseRef.current = true;
+      wasPlayingRef.current = false;
       audio.pause();
     }
   }, []);
@@ -107,6 +130,8 @@ export function PlayerProvider({ children }) {
   // Media Session entry so the lock-screen widget disappears too.
   const stop = useCallback(() => {
     const audio = audioRef.current;
+    userPauseRef.current = true;
+    wasPlayingRef.current = false;
     audio.pause();
     audio.removeAttribute('src');
     audio.load();
@@ -162,8 +187,32 @@ export function PlayerProvider({ children }) {
   // ─── audio element event wiring ────────────────────────────────────────
   useEffect(() => {
     const audio = audioRef.current;
-    const onPlay = () => setIsPlaying(true);
-    const onPause = () => setIsPlaying(false);
+    const onPlay = () => {
+      setIsPlaying(true);
+      // Cleared so the next "system pause" can still trigger auto-resume
+      // even if the previous pause was user-initiated.
+      userPauseRef.current = false;
+      resumeAttemptsRef.current = 0;
+    };
+    const onPause = () => {
+      setIsPlaying(false);
+      // User explicitly paused — leave them alone.
+      if (userPauseRef.current) return;
+      // We're loading a new song; the pause is just the src swap.
+      if (transitioningRef.current) return;
+      // System paused us (notification, focus loss, briefly off-route).
+      // Schedule a resume if we expected to be playing. Cap retries so
+      // we don't loop forever if iOS really wants us off.
+      if (wasPlayingRef.current && resumeAttemptsRef.current < 3) {
+        resumeAttemptsRef.current++;
+        const delay = 400 * resumeAttemptsRef.current;
+        setTimeout(() => {
+          if (wasPlayingRef.current && audio.paused) {
+            audio.play().catch(() => {});
+          }
+        }, delay);
+      }
+    };
     const onEnded = () => next();
     const onLoadedMeta = () => {
       if (Number.isFinite(audio.duration)) setDuration(audio.duration);
@@ -180,6 +229,26 @@ export function PlayerProvider({ children }) {
     };
   }, [next]);
 
+  // Visibility recovery: when the user returns to the app and audio is
+  // paused but they expected music, kick playback back on. Covers cases
+  // where iOS suspended audio while we were backgrounded for a notification
+  // or quick app-switch.
+  useEffect(() => {
+    const handler = () => {
+      const audio = audioRef.current;
+      if (document.hidden) return;
+      if (wasPlayingRef.current && audio.src && audio.paused) {
+        audio.play().catch(() => {});
+      }
+    };
+    document.addEventListener('visibilitychange', handler);
+    window.addEventListener('focus', handler);
+    return () => {
+      document.removeEventListener('visibilitychange', handler);
+      window.removeEventListener('focus', handler);
+    };
+  }, []);
+
   // ─── Media Session: lock screen + Control Center on iOS ────────────────
   useEffect(() => {
     if (!('mediaSession' in navigator) || !currentSong) return;
@@ -195,8 +264,18 @@ export function PlayerProvider({ children }) {
         : []
     });
     const handlers = {
-      play: () => audioRef.current.play().catch(() => {}),
-      pause: () => audioRef.current.pause(),
+      play: () => {
+        audioRef.current.play().then(() => {
+          wasPlayingRef.current = true;
+        }).catch(() => {});
+      },
+      pause: () => {
+        // Lock-screen / Bluetooth pause counts as user intent — flag it so
+        // the audio's pause event doesn't trigger an auto-resume.
+        userPauseRef.current = true;
+        wasPlayingRef.current = false;
+        audioRef.current.pause();
+      },
       previoustrack: prev,
       nexttrack: next,
       seekto: e => {

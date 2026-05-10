@@ -117,11 +117,29 @@ export function DownloadQueueProvider({ children }) {
         }
       }
 
+      // Build a focused yt-dlp query when we have clean Deezer values. The
+      // " audio" hint nudges YouTube's search toward Topic / Official Audio
+      // uploads (vs the music video, lyric-translation reuploads, covers).
+      // Combined with the duration filter, this picks the right master most
+      // of the time.
+      const usingDeezer = !!(expectedTitle && expectedArtist) && !/^https?:\/\//i.test(query);
+      const ytQuery = usingDeezer
+        ? `${expectedArtist} ${expectedTitle} audio`
+        : query;
+
       dispatch({ type: 'update', id, patch: { status: 'downloading' } });
-      const file = await downloadFromYoutube(query, { duration: expectedDuration });
+      const file = await downloadFromYoutube(ytQuery, { duration: expectedDuration });
 
       dispatch({ type: 'update', id, patch: { status: 'parsing' } });
       const meta = await extractMetadata(file);
+
+      // Canonical title/artist come from Deezer when available, NOT from
+      // yt-dlp's video metadata. yt-dlp grabbed "Perfect | Lirik Terjemahan"?
+      // doesn't matter — the song row says "Ed Sheeran - Perfect" because
+      // that's what the user searched for, and that's what LRCLIB will find
+      // synced lyrics for.
+      const canonicalTitle = expectedTitle || meta.title;
+      const canonicalArtist = expectedArtist || meta.artist;
 
       // Cover priority: Deezer (real album art) → ID3 embedded → none.
       // We prefer Deezer because yt-dlp downloads no longer carry ID3 cover
@@ -130,8 +148,8 @@ export function DownloadQueueProvider({ children }) {
       if (expectedCoverUrl) {
         coverBlob = await fetchCoverBlob(expectedCoverUrl);
       }
-      if (!coverBlob && (meta.artist && meta.title)) {
-        const t = await findTrack(meta.artist, meta.title);
+      if (!coverBlob && canonicalArtist && canonicalTitle) {
+        const t = await findTrack(canonicalArtist, canonicalTitle);
         const url = t?.album?.cover_xl || t?.album?.cover_big;
         if (url) coverBlob = await fetchCoverBlob(url);
       }
@@ -140,8 +158,8 @@ export function DownloadQueueProvider({ children }) {
       const songId = crypto.randomUUID();
       await addSong({
         id: songId,
-        title: meta.title,
-        artist: meta.artist,
+        title: canonicalTitle,
+        artist: canonicalArtist,
         album: meta.album,
         duration: meta.duration,
         mimeType: 'audio/mpeg',
@@ -150,10 +168,10 @@ export function DownloadQueueProvider({ children }) {
         addedAt: Date.now()
       });
 
-      dispatch({ type: 'update', id, patch: { status: 'lyrics', title: meta.title, artist: meta.artist } });
+      dispatch({ type: 'update', id, patch: { status: 'lyrics', title: canonicalTitle, artist: canonicalArtist } });
       const fetched = await fetchLyricsFromLrclib({
-        artist: meta.artist,
-        title: meta.title,
+        artist: canonicalArtist,
+        title: canonicalTitle,
         album: meta.album,
         duration: meta.duration
       }).catch(() => null);
