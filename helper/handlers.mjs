@@ -195,25 +195,26 @@ export async function handleSpotify(req, res) {
 export async function handleStream(req, res) {
   const u = new URL(req.url, 'http://x');
   const query = u.searchParams.get('q');
-  const duration = parseInt(u.searchParams.get('d'), 10);
   if (!query || query.length > MAX_QUERY) {
     sendJson(res, 400, { error: 'invalid query' });
     return;
   }
   const trimmed = query.trim();
   const isUrl = /^https?:\/\//i.test(trimmed);
-  const target = isUrl ? trimmed : `ytsearch5:${trimmed}`;
-  const filter = Number.isFinite(duration)
-    ? `duration > ${Math.max(30, duration - 15)} & duration < ${duration + 15}`
-    : 'duration > 60 & duration < 720';
+  // For streaming we want to play SOMETHING fast — the duration filter
+  // used by /api/download is too restrictive here (when no candidate
+  // matched ±15s, yt-dlp failed and the audio element never got bytes).
+  // ytsearch1 + "audio" hint already biases toward the right cut.
+  const target = isUrl ? trimmed : `ytsearch1:${trimmed}`;
 
   const args = [
-    // Prefer m4a; fall back to whatever bestaudio is. No transcode.
+    // m4a is the only YouTube audio format Safari plays reliably. The
+    // /bestaudio fallback is a safety net; if it kicks in for a webm/opus
+    // upload Safari won't play it, but that's rare for music tracks.
     '-f', 'bestaudio[ext=m4a]/bestaudio',
     '--no-playlist',
     '--no-warnings',
     '--quiet',
-    '--match-filter', filter,
     '-o', '-',
     '--', target
   ];

@@ -28,6 +28,13 @@ export function PlayerProvider({ children }) {
   const [duration, setDuration] = useState(0);
   const [queue, setQueue] = useState([]); // array of song ids
   const [shuffle, setShuffle] = useState(false);
+  // True while a stream is buffering (between issuing audio.src and the
+  // first 'playing' event). Drives the "Buffering…" indicator in Player.
+  const [streamLoading, setStreamLoading] = useState(false);
+  // Surfaces the last audio error (e.g. helper offline mid-stream, codec
+  // unsupported) so the UI can tell the user something instead of just
+  // sitting there silently.
+  const [audioError, setAudioError] = useState(null);
   const objectUrlRef = useRef(null);
   const coverUrlRef = useRef(null);
   // Tracks whether the user *wants* music playing. Set when they tap play
@@ -66,10 +73,15 @@ export function PlayerProvider({ children }) {
     if (!row || !row.blob) return;
 
     transitioningRef.current = true;
+    setStreamLoading(false);
+    setAudioError(null);
     revokeUrl();
     revokeCover();
     const url = URL.createObjectURL(row.blob);
     objectUrlRef.current = url;
+    // Blob URL is in-memory — 'metadata' preload is plenty and avoids
+    // wasted decode work for songs we may not play in full.
+    audio.preload = 'metadata';
     audio.src = url;
     audio.load();
 
@@ -102,15 +114,29 @@ export function PlayerProvider({ children }) {
     await loadSong(songIds[startIndex]);
   }, [loadSong]);
 
+  // Update only the metadata on the currently-streaming track WITHOUT
+  // touching the audio element. Used to attach lyrics after they finish
+  // fetching, without restarting playback.
+  const updateStreamMeta = useCallback((patch) => {
+    setCurrentSong(s => (s && s.isStream) ? { ...s, ...patch } : s);
+  }, []);
+
   // Stream a song from a URL without persisting to IndexedDB. The caller
   // provides a metadata bag (title/artist/coverUrl/duration) and optional
   // pre-fetched LRC lyrics in `streamLyrics`. The track has no DB id.
   const loadStream = useCallback(async (url, meta = {}, { autoplay = true } = {}) => {
     const audio = audioRef.current;
     transitioningRef.current = true;
+    setAudioError(null);
+    setStreamLoading(autoplay);
     revokeUrl();
     revokeCover();
     objectUrlRef.current = null;
+    // 'auto' tells the browser to keep buffering aggressively, which is
+    // what we want for a chunked HTTP stream from the helper. With
+    // 'metadata' (the default for our Blob-backed loadSong), Safari stops
+    // pulling after the first response chunk and playback never starts.
+    audio.preload = 'auto';
     audio.src = url;
     audio.load();
     setCurrentSong({
@@ -130,7 +156,9 @@ export function PlayerProvider({ children }) {
       try {
         await audio.play();
         wasPlayingRef.current = true;
-      } catch {}
+      } catch (err) {
+        setAudioError(err?.message || 'play blocked');
+      }
     }
     transitioningRef.current = false;
   }, []);
@@ -226,6 +254,23 @@ export function PlayerProvider({ children }) {
       // even if the previous pause was user-initiated.
       userPauseRef.current = false;
       resumeAttemptsRef.current = 0;
+      setStreamLoading(false);
+      setAudioError(null);
+    };
+    const onPlaying = () => {
+      // Fired when playback actually starts producing sound — best signal
+      // that buffering is done. Distinct from onPlay (which can fire while
+      // audio is still pulling its first bytes).
+      setStreamLoading(false);
+    };
+    const onWaiting = () => {
+      // Stalled mid-stream; the player UI shows a spinner.
+      setStreamLoading(true);
+    };
+    const onAudioError = () => {
+      const err = audio.error;
+      setStreamLoading(false);
+      if (err) setAudioError(`audio error (${err.code})`);
     };
     const onPause = () => {
       setIsPlaying(false);
@@ -251,14 +296,20 @@ export function PlayerProvider({ children }) {
       if (Number.isFinite(audio.duration)) setDuration(audio.duration);
     };
     audio.addEventListener('play', onPlay);
+    audio.addEventListener('playing', onPlaying);
+    audio.addEventListener('waiting', onWaiting);
     audio.addEventListener('pause', onPause);
     audio.addEventListener('ended', onEnded);
     audio.addEventListener('loadedmetadata', onLoadedMeta);
+    audio.addEventListener('error', onAudioError);
     return () => {
       audio.removeEventListener('play', onPlay);
+      audio.removeEventListener('playing', onPlaying);
+      audio.removeEventListener('waiting', onWaiting);
       audio.removeEventListener('pause', onPause);
       audio.removeEventListener('ended', onEnded);
       audio.removeEventListener('loadedmetadata', onLoadedMeta);
+      audio.removeEventListener('error', onAudioError);
     };
   }, [next]);
 
@@ -357,8 +408,11 @@ export function PlayerProvider({ children }) {
     duration,
     queue,
     shuffle,
+    streamLoading,
+    audioError,
     loadSong,
     loadStream,
+    updateStreamMeta,
     playFromQueue,
     togglePlay,
     seek,
@@ -366,7 +420,7 @@ export function PlayerProvider({ children }) {
     prev,
     stop,
     toggleShuffle
-  }), [currentSong, isPlaying, duration, queue, shuffle, loadSong, loadStream, playFromQueue, togglePlay, seek, next, prev, stop, toggleShuffle]);
+  }), [currentSong, isPlaying, duration, queue, shuffle, streamLoading, audioError, loadSong, loadStream, updateStreamMeta, playFromQueue, togglePlay, seek, next, prev, stop, toggleShuffle]);
 
   return <PlayerCtx.Provider value={value}>{children}</PlayerCtx.Provider>;
 }

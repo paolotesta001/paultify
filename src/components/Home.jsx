@@ -1,7 +1,8 @@
-import { useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db/database.js';
 import { usePlayer } from '../hooks/usePlayer.jsx';
+import { getStorageEstimate } from '../lib/persistence.js';
 import { Music, Play } from './Icons.jsx';
 
 // Spotify-style landing page. Pulls everything from the local DB; renders a
@@ -170,6 +171,7 @@ export default function Home({ onOpen, onPlay }) {
             </div>
             <span className="text-ink-500">›</span>
           </button>
+          <StorageLine />
         </section>
       )}
     </div>
@@ -233,6 +235,34 @@ function RailCard({ title, subtitle, onClick, active, accent, children }) {
         <p className="text-[11px] text-ink-400 truncate">{subtitle}</p>
       )}
     </button>
+  );
+}
+
+// Shows the rough IndexedDB usage so you know when to start pruning songs.
+// Updates every 30s while Home is mounted; cheap enough to leave running.
+function StorageLine() {
+  const [info, setInfo] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    const update = () => {
+      getStorageEstimate().then(est => {
+        if (!cancelled) setInfo(est);
+      });
+    };
+    update();
+    const id = setInterval(update, 30000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
+  if (!info?.usage) return null;
+  const mb = info.usage / 1024 / 1024;
+  const quotaMb = info.quota ? info.quota / 1024 / 1024 : null;
+  const fmt = v => v >= 1024 ? `${(v / 1024).toFixed(1)} GB` : `${Math.round(v)} MB`;
+  return (
+    <p className="mt-2 px-1 text-[11px] text-ink-500">
+      Library storage: {fmt(mb)}
+      {quotaMb ? ` / ${fmt(quotaMb)} available on this device` : ''}.
+      Delete a song from the player's ⋯ menu to free space.
+    </p>
   );
 }
 

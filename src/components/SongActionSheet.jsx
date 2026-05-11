@@ -23,7 +23,7 @@ import { Music } from './Icons.jsx';
 // the user already knows from Spotify / Apple Music.
 export default function SongActionSheet({ track, onClose, onListen }) {
   const { enqueue } = useDownloadQueue();
-  const { loadStream } = usePlayer();
+  const { loadStream, updateStreamMeta } = usePlayer();
   const [view, setView] = useState('main'); // 'main' | 'pickPlaylist'
   const [feedback, setFeedback] = useState(null);
 
@@ -49,9 +49,9 @@ export default function SongActionSheet({ track, onClose, onListen }) {
     setTimeout(onClose, 700);
   };
 
-  // Stream right now — no save. We start playback first, then fetch LRC
-  // lyrics in the background so they're ready by the time the user opens
-  // the lyrics window.
+  // Stream right now — no save. Playback starts immediately; lyrics are
+  // attached AFTER the fact via updateStreamMeta so we don't reload the
+  // audio element (which would kill the in-flight stream).
   const handleListen = async () => {
     setFeedback('Streaming…');
     const url = streamUrl(query, track.duration);
@@ -63,29 +63,21 @@ export default function SongActionSheet({ track, onClose, onListen }) {
       coverUrl: track.coverUrl,
       streamQuery: query
     });
-    // Background: pull synced lyrics with the same artist+title we'd use
-    // post-download, no DB write.
+    // Side-fetch the LRC and patch it onto the current song. The audio
+    // element is untouched, so the stream that just started keeps playing.
     fetchLyricsFromLrclib({
       artist: track.artist,
       title: track.title,
       duration: track.duration
     }).then(r => {
       if (r) {
-        // Stash on currentSong so Lyrics.jsx can read it. We use loadStream
-        // again with an updated meta — same audio src, just fresh metadata.
-        loadStream(url, {
-          title: track.title,
-          artist: track.artist,
-          album: track.album?.title || null,
-          duration: track.duration,
-          coverUrl: track.coverUrl,
-          streamQuery: query,
+        updateStreamMeta({
           streamLyrics: {
             lrcText: r.syncedLyrics || null,
             plainText: r.plainLyrics || null,
             source: 'lrclib'
           }
-        }, { autoplay: false });
+        });
       }
     }).catch(() => {});
     onListen?.();
