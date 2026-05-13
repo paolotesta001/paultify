@@ -98,6 +98,39 @@ async function findExistingSong(artist, title) {
   }
 }
 
+// Filler words that don't carry any matching signal between a user query
+// and a Deezer track title. Without this, "Tutto in un giorno of Fabri
+// Fibra" matched "Centoquindici" because Deezer's first hit happened to be
+// a different Fabri Fibra song — we don't want to silently trust that.
+const STOP = new Set([
+  'the', 'a', 'an', 'of', 'di', 'del', 'la', 'le', 'il', 'lo', 'i', 'e',
+  'and', 'feat', 'ft', 'featuring', 'with', 'remix', 'version', 'official',
+  'audio', 'video', 'lyrics', 'song', 'music'
+]);
+
+function tokens(s) {
+  return new Set(
+    (s || '')
+      .toLowerCase()
+      .replace(/[^\w\s]/g, ' ')
+      .split(/\s+/)
+      .filter(w => w.length > 2 && !STOP.has(w))
+  );
+}
+
+// Returns true when at least 40% of the user's "real" words (filler removed)
+// show up in the Deezer track's title+artist. The threshold is intentionally
+// permissive — typos, transliterations, the occasional remaster suffix — but
+// strict enough to reject "Tutto in un giorno" → "Centoquindici".
+function looksLikeMatch(userQuery, track) {
+  const a = tokens(userQuery);
+  const b = tokens(`${track.title || ''} ${track.artist?.name || ''}`);
+  if (!a.size) return true; // can't judge, trust the user's intent
+  let hits = 0;
+  for (const w of a) if (b.has(w)) hits++;
+  return hits / a.size >= 0.4;
+}
+
 export function DownloadQueueProvider({ children }) {
   const [items, dispatch] = useReducer(reducer, []);
   const inFlightRef = useRef(new Set());
@@ -151,9 +184,15 @@ export function DownloadQueueProvider({ children }) {
       // Enrichment: for free-text Quick Add we have no Deezer track yet.
       // Look it up so yt-dlp can apply the duration filter and so we have
       // a real album cover URL by the time the audio finishes downloading.
+      //
+      // Critically, we validate Deezer's top hit against the user's query.
+      // Deezer's #1 result can be a completely unrelated track when the
+      // query is fuzzy ("Tutto in un giorno of Fabri Fibra" → Deezer
+      // returned "Centoquindici"). If the tokens don't overlap, we throw
+      // the enrichment away and let yt-dlp search the literal query.
       if (!expectedDuration && !/^https?:\/\//i.test(query)) {
         const t = await findTrack(expectedArtist || '', expectedTitle || query);
-        if (t) {
+        if (t && looksLikeMatch(query, t)) {
           expectedDuration = expectedDuration || t.duration;
           expectedCoverUrl = expectedCoverUrl || t.album?.cover_xl || t.album?.cover_big;
           expectedTitle = expectedTitle || t.title;

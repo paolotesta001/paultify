@@ -93,6 +93,10 @@ export async function handleDownload(req, res) {
       '--no-playlist',
       '--no-warnings',
       '--quiet',
+      // android player_client bypasses YouTube's recent server-side
+      // "Sign in to confirm you're not a bot" + age checks that hit the
+      // default web client (e.g. Coldplay's "Viva la Vida").
+      '--extractor-args', 'youtube:player_client=android',
       '--match-filter', filter,
       '-o', join(dir, '%(title).150B.%(ext)s'),
       '--', target
@@ -201,20 +205,23 @@ export async function handleStream(req, res) {
   }
   const trimmed = query.trim();
   const isUrl = /^https?:\/\//i.test(trimmed);
-  // For streaming we want to play SOMETHING fast — the duration filter
-  // used by /api/download is too restrictive here (when no candidate
-  // matched ±15s, yt-dlp failed and the audio element never got bytes).
-  // ytsearch1 + "audio" hint already biases toward the right cut.
   const target = isUrl ? trimmed : `ytsearch1:${trimmed}`;
 
+  // mp3 instead of m4a. YouTube's m4a is mostly NOT faststart (moov atom
+  // at the end of the file), so browsers can't start decoding until the
+  // whole file arrives — playback never began. mp3 has no header to wait
+  // for; the browser plays each frame as it arrives.
+  //
+  // android player_client routes around YouTube's recent server-side bot
+  // checks / age gates that hit the default web client.
   const args = [
-    // m4a is the only YouTube audio format Safari plays reliably. The
-    // /bestaudio fallback is a safety net; if it kicks in for a webm/opus
-    // upload Safari won't play it, but that's rare for music tracks.
-    '-f', 'bestaudio[ext=m4a]/bestaudio',
+    '-x',
+    '--audio-format', 'mp3',
+    '--audio-quality', '5',
     '--no-playlist',
     '--no-warnings',
     '--quiet',
+    '--extractor-args', 'youtube:player_client=android',
     '-o', '-',
     '--', target
   ];
@@ -231,14 +238,11 @@ export async function handleStream(req, res) {
   let stderr = '';
   proc.stderr.on('data', c => { stderr += c.toString(); });
 
-  // Send headers on the first byte so browsers can start buffering. Until
-  // then, errors translate to a JSON error response.
   proc.stdout.once('data', () => {
     headersSent = true;
     res.writeHead(200, {
       ...corsHeaders(),
-      // mp4/aac container; works for m4a/opus/etc in practice across browsers.
-      'Content-Type': 'audio/mp4',
+      'Content-Type': 'audio/mpeg',
       'Cache-Control': 'no-cache',
       'X-Stream': '1'
     });
@@ -256,8 +260,6 @@ export async function handleStream(req, res) {
     if (!headersSent) sendJson(res, 500, { error: err.message });
   });
 
-  // If the client disconnects (user skipped, closed tab), terminate yt-dlp
-  // so we don't keep YouTube traffic going for a stream nobody listens to.
   res.on('close', () => {
     if (!proc.killed) proc.kill('SIGKILL');
   });
