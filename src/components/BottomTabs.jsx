@@ -29,11 +29,20 @@ const PlusIcon = ({ active }) => (
   </svg>
 );
 
+const TimerIcon = ({ active }) => (
+  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={active ? 2.5 : 2} strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="12" cy="13" r="8" />
+    <path d="M12 9v4l2.5 2.5" />
+    <path d="M9 2h6" />
+  </svg>
+);
+
 const TABS = [
   { id: 'home', label: 'Home', Icon: HomeIcon },
   { id: 'search', label: 'Search', Icon: SearchIcon },
   { id: 'add', label: 'Add', Icon: PlusIcon },
-  { id: 'playlists', label: 'Playlists', Icon: ListIcon }
+  { id: 'playlists', label: 'Playlists', Icon: ListIcon },
+  { id: 'timer', label: 'Timer', Icon: TimerIcon }
 ];
 
 export default function BottomTabs({ active, onChange }) {

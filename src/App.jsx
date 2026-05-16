@@ -9,6 +9,7 @@ import Home from './components/Home.jsx';
 import Search from './components/Search.jsx';
 import Add from './components/Add.jsx';
 import Playlists from './components/Playlists.jsx';
+import Timer from './components/Timer.jsx';
 import PlaylistView from './components/PlaylistView.jsx';
 import ArtistView from './components/ArtistView.jsx';
 import AlbumView from './components/AlbumView.jsx';
@@ -97,6 +98,8 @@ export default function App() {
     content = (
       <Playlists onOpen={id => setSub({ kind: 'playlist', id })} />
     );
+  } else if (tab === 'timer') {
+    content = <Timer />;
   }
 
   return (

@@ -67,10 +67,16 @@ export function PlayerProvider({ children }) {
 
   // Load a song by id: pull Blob from Dexie, swap the audio source.
   // Also stamps lastPlayedAt so Home's "Recently played" rail surfaces it.
+  //
+  // Returns true when the audio source was successfully swapped, false if
+  // the requested song no longer exists in IndexedDB (e.g. the user
+  // deleted it but its id still lives in some queue). The caller — most
+  // importantly next() — uses that signal to skip past dead ids instead
+  // of silently stopping playback.
   const loadSong = useCallback(async (songId, { autoplay = true } = {}) => {
     const audio = audioRef.current;
     const row = await getSong(songId);
-    if (!row || !row.blob) return;
+    if (!row || !row.blob) return false;
 
     transitioningRef.current = true;
     setStreamLoading(false);
@@ -106,12 +112,17 @@ export function PlayerProvider({ children }) {
       }
     }
     transitioningRef.current = false;
+    return true;
   }, []);
 
   // ─── public methods ────────────────────────────────────────────────────
   const playFromQueue = useCallback(async (songIds, startIndex = 0) => {
     setQueue(songIds);
-    await loadSong(songIds[startIndex]);
+    // If the first id is dead, walk forward until we find one that loads.
+    for (let i = 0; i < songIds.length; i++) {
+      const idx = (startIndex + i) % songIds.length;
+      if (await loadSong(songIds[idx])) return;
+    }
   }, [loadSong]);
 
   // Update only the metadata on the currently-streaming track WITHOUT
@@ -210,23 +221,43 @@ export function PlayerProvider({ children }) {
 
   const toggleShuffle = useCallback(() => setShuffle(s => !s), []);
 
+  // Walks the queue from `startIdx` in `step` direction until a loadable
+  // song is found. Prevents one deleted/invalid id from silently stopping
+  // playback — we just skip past it.
+  const advance = useCallback(async (startIdx, step) => {
+    if (!queue.length) return;
+    for (let i = 0; i < queue.length; i++) {
+      const idx = ((startIdx + step * (i + 1)) % queue.length + queue.length) % queue.length;
+      if (await loadSong(queue[idx])) return;
+    }
+  }, [queue, loadSong]);
+
   // When shuffle is on, next() picks any other queue item at random; prev()
   // also goes random so cycling backwards is meaningful. With shuffle off
-  // the queue plays in its original order.
-  const next = useCallback(() => {
+  // the queue plays in its original order. Both retry through the queue if
+  // a song id has been deleted.
+  const next = useCallback(async () => {
     if (!queue.length || !currentSong) return;
     if (shuffle && queue.length > 1) {
       const others = queue.filter(id => id !== currentSong.id);
-      const nextId = others[Math.floor(Math.random() * others.length)];
-      if (nextId) loadSong(nextId);
+      // Try random picks up to 3 times before falling back to linear scan
+      // — keeps shuffle feeling random but never gets stuck on dead ids.
+      for (let i = 0; i < 3 && others.length; i++) {
+        const pickIdx = Math.floor(Math.random() * others.length);
+        if (await loadSong(others[pickIdx])) return;
+        others.splice(pickIdx, 1);
+      }
+      // Linear fallback
+      for (const id of others) {
+        if (await loadSong(id)) return;
+      }
       return;
     }
     const i = queue.indexOf(currentSong.id);
-    const nextId = queue[(i + 1) % queue.length];
-    if (nextId) loadSong(nextId);
-  }, [queue, currentSong, loadSong, shuffle]);
+    await advance(i, 1);
+  }, [queue, currentSong, loadSong, shuffle, advance]);
 
-  const prev = useCallback(() => {
+  const prev = useCallback(async () => {
     const audio = audioRef.current;
     // Spotify-style: if more than 3s into the song, restart instead of skipping.
     if (audio.currentTime > 3) {
@@ -236,14 +267,14 @@ export function PlayerProvider({ children }) {
     if (!queue.length || !currentSong) return;
     if (shuffle && queue.length > 1) {
       const others = queue.filter(id => id !== currentSong.id);
-      const prevId = others[Math.floor(Math.random() * others.length)];
-      if (prevId) loadSong(prevId);
+      for (const id of others.sort(() => Math.random() - 0.5)) {
+        if (await loadSong(id)) return;
+      }
       return;
     }
     const i = queue.indexOf(currentSong.id);
-    const prevId = queue[(i - 1 + queue.length) % queue.length];
-    if (prevId) loadSong(prevId);
-  }, [queue, currentSong, loadSong, shuffle]);
+    await advance(i, -1);
+  }, [queue, currentSong, loadSong, shuffle, advance]);
 
   // ─── audio element event wiring ────────────────────────────────────────
   useEffect(() => {
@@ -256,6 +287,12 @@ export function PlayerProvider({ children }) {
       resumeAttemptsRef.current = 0;
       setStreamLoading(false);
       setAudioError(null);
+      // Signal iOS / Android / desktop OSes that we're music playback —
+      // helps them keep the audio session alive when the page is
+      // backgrounded and to surface the right lock-screen widget.
+      if ('mediaSession' in navigator) {
+        try { navigator.mediaSession.playbackState = 'playing'; } catch {}
+      }
     };
     const onPlaying = () => {
       // Fired when playback actually starts producing sound — best signal
@@ -274,6 +311,9 @@ export function PlayerProvider({ children }) {
     };
     const onPause = () => {
       setIsPlaying(false);
+      if ('mediaSession' in navigator) {
+        try { navigator.mediaSession.playbackState = 'paused'; } catch {}
+      }
       // User explicitly paused — leave them alone.
       if (userPauseRef.current) return;
       // We're loading a new song; the pause is just the src swap.
@@ -317,6 +357,10 @@ export function PlayerProvider({ children }) {
   // paused but they expected music, kick playback back on. Covers cases
   // where iOS suspended audio while we were backgrounded for a notification
   // or quick app-switch.
+  //
+  // We listen for the full set of "you're back on screen" signals — some
+  // fire and some don't depending on iOS version, PWA vs Safari tab,
+  // network change, etc. Belts and braces.
   useEffect(() => {
     const handler = () => {
       const audio = audioRef.current;
@@ -327,9 +371,15 @@ export function PlayerProvider({ children }) {
     };
     document.addEventListener('visibilitychange', handler);
     window.addEventListener('focus', handler);
+    window.addEventListener('pageshow', handler);
+    // Page Lifecycle API: fires when the page transitions out of the
+    // 'frozen' state (iOS uses this when memory pressure rises).
+    document.addEventListener('resume', handler);
     return () => {
       document.removeEventListener('visibilitychange', handler);
       window.removeEventListener('focus', handler);
+      window.removeEventListener('pageshow', handler);
+      document.removeEventListener('resume', handler);
     };
   }, []);
 
