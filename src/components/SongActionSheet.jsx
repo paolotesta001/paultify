@@ -42,6 +42,7 @@ export default function SongActionSheet({ track, onClose, onListen }) {
     enqueue(query, {
       expectedArtist: track.artist,
       expectedTitle: track.title,
+      expectedAlbum: track.album?.title || null,
       expectedDuration: track.duration,
       expectedCoverUrl: track.coverUrl
     });
@@ -189,6 +190,7 @@ function PickPlaylist({ track, query, onPicked, onBack }) {
         playlistId,
         expectedArtist: track.artist,
         expectedTitle: track.title,
+        expectedAlbum: track.album?.title || null,
         expectedDuration: track.duration,
         expectedCoverUrl: track.coverUrl
       });

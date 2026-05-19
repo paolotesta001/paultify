@@ -282,6 +282,7 @@ function DiscoverAlbumView({ album, onTrack }) {
       enqueue(`${album.artist?.name || ''} - ${t.title}`.trim(), {
         expectedArtist: album.artist?.name,
         expectedTitle: t.title,
+        expectedAlbum: album.title,
         expectedDuration: t.duration,
         expectedCoverUrl: cover
       });

@@ -34,6 +34,10 @@ function reducer(items, action) {
           playlistId: action.playlistId || null,
           expectedTitle: action.expectedTitle || null,
           expectedArtist: action.expectedArtist || null,
+          // Album name (from Deezer/Spotify). yt-dlp downloads rarely have
+          // a useful ID3 album tag, so without this every song lands in
+          // "Singles & EPs" on the Artist page.
+          expectedAlbum: action.expectedAlbum || null,
           // Studio duration (Deezer). yt-dlp filters candidate videos by
           // ±15s of this so we get the audio version, not the music video.
           expectedDuration: action.expectedDuration || null,
@@ -118,17 +122,28 @@ function tokens(s) {
   );
 }
 
-// Returns true when at least 40% of the user's "real" words (filler removed)
-// show up in the Deezer track's title+artist. The threshold is intentionally
-// permissive — typos, transliterations, the occasional remaster suffix — but
-// strict enough to reject "Tutto in un giorno" → "Centoquindici".
+// Stricter validator: the user's title-words (their query minus the words
+// that match the candidate's artist) must overlap with the candidate's
+// title. Without this rule we were accepting any track by the right artist
+// — e.g. "invidia of fabri fibra" silently became "Che gusto c'è" because
+// "fabri fibra" alone hit the old 40% bar.
 function looksLikeMatch(userQuery, track) {
-  const a = tokens(userQuery);
-  const b = tokens(`${track.title || ''} ${track.artist?.name || ''}`);
-  if (!a.size) return true; // can't judge, trust the user's intent
-  let hits = 0;
-  for (const w of a) if (b.has(w)) hits++;
-  return hits / a.size >= 0.4;
+  const userTokens = tokens(userQuery);
+  if (!userTokens.size) return true;
+  const titleTokens = tokens(track.title);
+  const artistTokens = tokens(track.artist?.name || '');
+
+  // Words the user typed that don't match the artist — that's what they
+  // probably meant as the song title.
+  const userTitleTokens = new Set([...userTokens].filter(t => !artistTokens.has(t)));
+
+  // Pure artist search ("just play me anything by X") — any track is fine.
+  if (!userTitleTokens.size) return true;
+
+  // Otherwise we need at least one title-word actually present in the
+  // candidate title.
+  for (const t of userTitleTokens) if (titleTokens.has(t)) return true;
+  return false;
 }
 
 export function DownloadQueueProvider({ children }) {
@@ -159,7 +174,7 @@ export function DownloadQueueProvider({ children }) {
   // Stable processor — never re-created, so the worker effect's identity
   // doesn't churn. dispatch from useReducer is also stable.
   const processItem = useCallback(async (id, query, opts = {}) => {
-    let { playlistId, expectedTitle, expectedArtist, expectedDuration, expectedCoverUrl } = opts;
+    let { playlistId, expectedTitle, expectedArtist, expectedAlbum, expectedDuration, expectedCoverUrl } = opts;
     try {
       // Dedup pass — if Spotify gave us "Artist + Title" and we already have
       // an exact match in the library, skip the download entirely and just
@@ -197,6 +212,7 @@ export function DownloadQueueProvider({ children }) {
           expectedCoverUrl = expectedCoverUrl || t.album?.cover_xl || t.album?.cover_big;
           expectedTitle = expectedTitle || t.title;
           expectedArtist = expectedArtist || t.artist?.name;
+          expectedAlbum = expectedAlbum || t.album?.title;
           dispatch({
             type: 'update', id, patch: {
               title: expectedTitle, artist: expectedArtist
@@ -205,15 +221,21 @@ export function DownloadQueueProvider({ children }) {
         }
       }
 
-      // Build a focused yt-dlp query when we have clean Deezer values. The
-      // " audio" hint nudges YouTube's search toward Topic / Official Audio
-      // uploads (vs the music video, lyric-translation reuploads, covers).
-      // Combined with the duration filter, this picks the right master most
-      // of the time.
+      // Build a focused yt-dlp query. The "audio" hint nudges YouTube's
+      // search toward Topic / Official Audio uploads. The negative tokens
+      // dodge the recurring traps:
+      //   -cover     covers by other artists
+      //   -karaoke   karaoke / instrumental backing tracks
+      //   -live      live recordings when the user wanted the studio cut
+      //
+      // YouTube's search engine honours these `-word` exclusions.
       const usingDeezer = !!(expectedTitle && expectedArtist) && !/^https?:\/\//i.test(query);
-      const ytQuery = usingDeezer
-        ? `${expectedArtist} ${expectedTitle} audio`
-        : query;
+      const negatives = '-cover -karaoke -live';
+      const ytQuery = /^https?:\/\//i.test(query)
+        ? query
+        : usingDeezer
+          ? `${expectedArtist} ${expectedTitle} audio ${negatives}`
+          : `${query} audio ${negatives}`;
 
       dispatch({ type: 'update', id, patch: { status: 'downloading' } });
       const file = await downloadFromYoutube(ytQuery, { duration: expectedDuration });
@@ -243,12 +265,18 @@ export function DownloadQueueProvider({ children }) {
       }
       coverBlob = coverBlob || meta.coverBlob || null;
 
+      // Canonical album: prefer the value we got from Deezer / Spotify /
+      // Discover album view; fall back to whatever yt-dlp wrote into ID3
+      // (usually empty). Without this every yt-dlp download landed in the
+      // "Singles & EPs" bucket because no album tag survived the embed.
+      const canonicalAlbum = expectedAlbum || meta.album || null;
+
       const songId = crypto.randomUUID();
       await addSong({
         id: songId,
         title: canonicalTitle,
         artist: canonicalArtist,
-        album: meta.album,
+        album: canonicalAlbum,
         duration: meta.duration,
         mimeType: 'audio/mpeg',
         blob: file,
@@ -260,7 +288,7 @@ export function DownloadQueueProvider({ children }) {
       const fetched = await fetchLyricsFromLrclib({
         artist: canonicalArtist,
         title: canonicalTitle,
-        album: meta.album,
+        album: canonicalAlbum,
         duration: meta.duration
       }).catch(() => null);
       await setLyrics(songId, {
@@ -293,6 +321,7 @@ export function DownloadQueueProvider({ children }) {
         processItem(item.id, item.query, {
           playlistId: item.playlistId,
           expectedTitle: item.expectedTitle,
+          expectedAlbum: item.expectedAlbum,
           expectedArtist: item.expectedArtist,
           expectedDuration: item.expectedDuration,
           expectedCoverUrl: item.expectedCoverUrl
@@ -310,6 +339,7 @@ export function DownloadQueueProvider({ children }) {
       playlistId: opts.playlistId,
       expectedTitle: opts.expectedTitle,
       expectedArtist: opts.expectedArtist,
+      expectedAlbum: opts.expectedAlbum,
       expectedDuration: opts.expectedDuration,
       expectedCoverUrl: opts.expectedCoverUrl
     });

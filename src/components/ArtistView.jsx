@@ -21,18 +21,23 @@ export default function ArtistView({ artistName, onBack, onPlay, onOpen }) {
   );
 
   // Group by album. Songs missing an album collect under a single "Singles
-  // & EPs" bucket so they're still browsable.
+  // & EPs" bucket so they're still browsable. The bucket carries its real
+  // intent (`isSingles: true`) so we can route through AlbumView correctly
+  // — passing the literal string "Singles & EPs" as an album name would
+  // make AlbumView's `where('album') = ...` query find nothing.
   const albums = useMemo(() => {
     if (!songs) return [];
     const groups = new Map();
     for (const s of songs) {
       const key = s.album || '__singles__';
       const name = s.album || 'Singles & EPs';
-      if (!groups.has(key)) groups.set(key, { key, name, songs: [] });
+      if (!groups.has(key)) {
+        groups.set(key, { key, name, songs: [], isSingles: !s.album });
+      }
       groups.get(key).songs.push(s);
     }
     return [...groups.values()].sort((a, b) =>
-      a.key === '__singles__' ? 1 : b.key === '__singles__' ? -1 : a.name.localeCompare(b.name)
+      a.isSingles ? 1 : b.isSingles ? -1 : a.name.localeCompare(b.name)
     );
   }, [songs]);
 
@@ -143,7 +148,16 @@ export default function ArtistView({ artistName, onBack, onPlay, onOpen }) {
             {albums.map(al => (
               <button
                 key={al.key}
-                onClick={() => onOpen({ kind: 'album', name: al.name, artist: artistName })}
+                onClick={() => onOpen({
+                  kind: 'album',
+                  // For the Singles & EPs tile we pass name: null so
+                  // AlbumView knows to find songs by this artist with no
+                  // album set (rather than searching for a literal album
+                  // called "Singles & EPs", which is what it used to do).
+                  name: al.isSingles ? null : al.name,
+                  artist: artistName,
+                  displayName: al.name
+                })}
                 className="text-left active:scale-[0.98] transition-transform"
               >
                 <div className="aspect-square rounded-lg overflow-hidden bg-ink-800 mb-2">

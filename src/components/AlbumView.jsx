@@ -8,19 +8,35 @@ import { Music, Trash } from './Icons.jsx';
 // this album name. Tapping a song plays the album as a queue. Per-song
 // trash here permanently removes a track from the library (unlike the
 // playlist trash, which only unlinks).
-export default function AlbumView({ albumName, artistName, onBack, onPlay }) {
+export default function AlbumView({ albumName, artistName, displayName, onBack, onPlay }) {
   const { currentSong, playFromQueue } = usePlayer();
 
+  // Two modes:
+  //   - albumName set → find every song tagged with that album
+  //   - albumName null/empty (the "Singles & EPs" case) → find every song
+  //     by `artistName` that has NO album set. This is the path ArtistView
+  //     hits when it folds non-album tracks into a single tile.
   const songs = useLiveQuery(
-    () => db.songs.where('album').equalsIgnoreCase(albumName).toArray()
-      .then(rows => rows
+    async () => {
+      let rows;
+      if (albumName) {
+        rows = await db.songs.where('album').equalsIgnoreCase(albumName).toArray();
+      } else if (artistName) {
+        const byArtist = await db.songs.where('artist').equalsIgnoreCase(artistName).toArray();
+        rows = byArtist.filter(r => !r.album);
+      } else {
+        rows = [];
+      }
+      return rows
         .map(({ blob, coverBlob, ...meta }) => ({ ...meta, _hasCover: !!coverBlob }))
-        // Same-album tracks may have different artists (compilations); we
-        // surface those plainly. Sort by title since we don't have track
-        // numbers from yt-dlp/uploads.
-        .sort((a, b) => a.title.localeCompare(b.title))),
-    [albumName]
+        .sort((a, b) => a.title.localeCompare(b.title));
+    },
+    [albumName, artistName]
   );
+
+  // What to show in the header. For Singles & EPs we use the friendly
+  // label rather than "(no album)".
+  const headerTitle = albumName || displayName || 'Singles & EPs';
 
   // Pull one cover Blob URL for the header. Released on unmount.
   const [coverUrl, setCoverUrl] = useState(null);
@@ -80,11 +96,11 @@ export default function AlbumView({ albumName, artistName, onBack, onPlay }) {
           {coverUrl ? (
             <img src={coverUrl} alt="" className="w-full h-full object-cover" />
           ) : (
-            albumName.slice(0, 1).toUpperCase()
+            headerTitle.slice(0, 1).toUpperCase()
           )}
         </div>
         <div className="flex-1 min-w-0">
-          <h1 className="text-xl font-bold truncate">{albumName}</h1>
+          <h1 className="text-xl font-bold truncate">{headerTitle}</h1>
           {artistName && (
             <p className="text-sm text-ink-400 truncate">{artistName}</p>
           )}

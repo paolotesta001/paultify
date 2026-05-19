@@ -51,6 +51,11 @@ export default function SpotifyImport({ onImported }) {
       const playlistName = details.name || 'Spotify import';
       const playlistId = await createPlaylist(playlistName);
 
+      // When the user imports an album URL, every track inherits that album
+      // name. For playlist URLs the album varies per track, and Deezer
+      // enrichment fills it in.
+      const albumFromImport = details.type === 'album' ? details.name : null;
+
       for (const track of details.tracks) {
         // yt-dlp picks the best match for "Artist - Title". The queue worker
         // will Deezer-search to find the album cover (Spotify embed scrape
@@ -59,6 +64,7 @@ export default function SpotifyImport({ onImported }) {
           playlistId,
           expectedArtist: track.artist,
           expectedTitle: track.title,
+          expectedAlbum: albumFromImport,
           expectedDuration: track.duration
         });
       }
