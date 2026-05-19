@@ -12,12 +12,23 @@ import SongActionSheet from './SongActionSheet.jsx';
 export default function Discover({ onPlay }) {
   const [helperOk, setHelperOk] = useState(null);
   const [query, setQuery] = useState('');
+  // Each view carries a `previous` snapshot so the back button can walk
+  // back the way the user came (album → artist → overview), not always
+  // straight to overview the way it used to.
   const [view, setView] = useState({ kind: 'overview' });
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [activeTrack, setActiveTrack] = useState(null);
   const reqRef = useRef(0);
+  // Per-session caches so revisiting a view shows results instantly while
+  // we refetch in the background — no more "infinite Searching…" on a
+  // back-button tap.
+  const cacheRef = useRef({
+    overview: new Map(), // query → { tracks, artists, albums }
+    artist: new Map(),   // artistId → { tracks, albums }
+    album: new Map()     // albumId → { album }
+  });
 
   useEffect(() => {
     let active = true;
@@ -30,27 +41,38 @@ export default function Discover({ onPlay }) {
     return () => { active = false; clearInterval(id); };
   }, []);
 
+  // Overview fetch — debounced, with cache priming so the user sees the
+  // last results immediately on return.
   useEffect(() => {
     if (view.kind !== 'overview') return;
     const q = query.trim();
     if (q.length < 2) {
       setData(null);
       setError(null);
+      setLoading(false);
       return;
     }
     const myReq = ++reqRef.current;
-    setLoading(true);
+    const cached = cacheRef.current.overview.get(q);
+    if (cached) {
+      setData(cached);
+      setLoading(false);
+    } else {
+      setLoading(true);
+    }
     setError(null);
     const t = setTimeout(async () => {
       try {
         const r = await searchOverview(q);
         if (myReq === reqRef.current) {
+          cacheRef.current.overview.set(q, r);
           setData(r);
           setLoading(false);
         }
       } catch (err) {
         if (myReq === reqRef.current) {
-          setError(err.message);
+          // Only show error if we have nothing stale to show.
+          if (!cached) setError(err.message);
           setLoading(false);
         }
       }
@@ -58,41 +80,63 @@ export default function Discover({ onPlay }) {
     return () => clearTimeout(t);
   }, [query, view.kind]);
 
+  // Artist + album fetches — same cache-first pattern.
   useEffect(() => {
-    const myReq = ++reqRef.current;
     if (view.kind === 'artist') {
-      setLoading(true);
+      const myReq = ++reqRef.current;
+      const cached = cacheRef.current.artist.get(view.artist.id);
+      if (cached) {
+        setData(cached);
+        setLoading(false);
+      } else {
+        setLoading(true);
+      }
       setError(null);
       Promise.all([
         getArtistTopTracks(view.artist.id),
         getArtistAlbums(view.artist.id)
       ]).then(([tracks, albums]) => {
         if (myReq === reqRef.current) {
-          setData({ tracks, albums });
+          const result = { tracks, albums };
+          cacheRef.current.artist.set(view.artist.id, result);
+          setData(result);
           setLoading(false);
         }
       }).catch(err => {
         if (myReq === reqRef.current) {
-          setError(err.message);
+          if (!cached) setError(err.message);
           setLoading(false);
         }
       });
     } else if (view.kind === 'album') {
-      setLoading(true);
+      const myReq = ++reqRef.current;
+      const cached = cacheRef.current.album.get(view.album.id);
+      if (cached) {
+        setData(cached);
+        setLoading(false);
+      } else {
+        setLoading(true);
+      }
       setError(null);
       getAlbum(view.album.id).then(album => {
         if (myReq === reqRef.current) {
-          setData({ album });
+          const result = { album };
+          cacheRef.current.album.set(view.album.id, result);
+          setData(result);
           setLoading(false);
         }
       }).catch(err => {
         if (myReq === reqRef.current) {
-          setError(err.message);
+          if (!cached) setError(err.message);
           setLoading(false);
         }
       });
     }
   }, [view]);
+
+  // Step back through the view stack. Album → its parent artist →
+  // overview (or wherever the user came from).
+  const goBack = () => setView(view.previous || { kind: 'overview' });
 
   // Helper UX: rather than hiding the panel, surface a soft inline notice.
   // The search input still works (Deezer hits will fail until helper is up).
@@ -130,10 +174,13 @@ export default function Discover({ onPlay }) {
         />
         {(view.kind === 'artist' || view.kind === 'album') && (
           <button
-            onClick={() => setView({ kind: 'overview' })}
+            onClick={goBack}
             className="mt-2 text-[11px] uppercase tracking-wider text-ink-400 hover:text-ink-200"
           >
-            ← Back to results
+            ← Back
+            {view.kind === 'album' && view.previous?.kind === 'artist'
+              ? ` to ${view.previous.artist.name}`
+              : ' to results'}
           </button>
         )}
         {helperWarning && (
@@ -142,28 +189,33 @@ export default function Discover({ onPlay }) {
       </div>
 
       <div>
-        {loading && <Hint>Searching…</Hint>}
         {error && <Hint className="text-red-400">{error}</Hint>}
-        {!loading && !error && view.kind === 'overview' && (
+        {!error && view.kind === 'overview' && (
           query.trim().length < 2
             ? <Hint>Type to search — try "Ed Sheeran" or "Heat Waves".</Hint>
-            : <OverviewResults
+            : data
+              ? <OverviewResults
+                  data={data}
+                  onArtist={a => setView({ kind: 'artist', artist: a, previous: view })}
+                  onAlbum={a => setView({ kind: 'album', album: a, previous: view })}
+                  onTrack={openSheet}
+                />
+              : loading && <Hint>Searching…</Hint>
+        )}
+        {!error && view.kind === 'artist' && (
+          data
+            ? <DiscoverArtistView
+                artist={view.artist}
                 data={data}
-                onArtist={a => setView({ kind: 'artist', artist: a })}
-                onAlbum={a => setView({ kind: 'album', album: a })}
+                onAlbum={a => setView({ kind: 'album', album: a, previous: view })}
                 onTrack={openSheet}
               />
+            : loading && <Hint>Loading {view.artist.name}…</Hint>
         )}
-        {!loading && !error && view.kind === 'artist' && (
-          <DiscoverArtistView
-            artist={view.artist}
-            data={data}
-            onAlbum={a => setView({ kind: 'album', album: a })}
-            onTrack={openSheet}
-          />
-        )}
-        {!loading && !error && view.kind === 'album' && (
-          <DiscoverAlbumView album={data?.album} onTrack={openSheet} />
+        {!error && view.kind === 'album' && (
+          data?.album
+            ? <DiscoverAlbumView album={data.album} onTrack={openSheet} />
+            : loading && <Hint>Loading album…</Hint>
         )}
       </div>
 

@@ -81,6 +81,11 @@ export async function handleDownload(req, res) {
   const dir = await mkdtemp(join(tmpdir(), 'lyric-dl-'));
   try {
     const args = [
+      // Pick the loudest, longest audio stream YouTube has, falling back
+      // gracefully so we never error with "no audio extracted" when m4a
+      // isn't available — opus / mp3 / whatever-else all transcode to
+      // mp3 below.
+      '-f', 'bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio/best',
       '-x',
       '--audio-format', 'mp3',
       '--audio-quality', '0',
@@ -93,10 +98,11 @@ export async function handleDownload(req, res) {
       '--no-playlist',
       '--no-warnings',
       '--quiet',
-      // android player_client bypasses YouTube's recent server-side
-      // "Sign in to confirm you're not a bot" + age checks that hit the
-      // default web client (e.g. Coldplay's "Viva la Vida").
-      '--extractor-args', 'youtube:player_client=android',
+      // Try several YouTube clients in order. android + ios + tv_embedded
+      // dodge most of YouTube's age-gates and bot checks; tv_embedded
+      // specifically rescues "Sign in to confirm your age" tracks like
+      // Coldplay's "Viva la Vida" when android alone isn't enough.
+      '--extractor-args', 'youtube:player_client=android,ios,tv_embedded,web',
       '--match-filter', filter,
       '-o', join(dir, '%(title).150B.%(ext)s'),
       '--', target
@@ -212,16 +218,18 @@ export async function handleStream(req, res) {
   // whole file arrives — playback never began. mp3 has no header to wait
   // for; the browser plays each frame as it arrives.
   //
-  // android player_client routes around YouTube's recent server-side bot
-  // checks / age gates that hit the default web client.
+  // android + ios + tv_embedded routes around YouTube's bot checks and
+  // age gates. Broader format fallback so we don't fail on uploads that
+  // only offer opus.
   const args = [
+    '-f', 'bestaudio[ext=m4a]/bestaudio/best',
     '-x',
     '--audio-format', 'mp3',
     '--audio-quality', '5',
     '--no-playlist',
     '--no-warnings',
     '--quiet',
-    '--extractor-args', 'youtube:player_client=android',
+    '--extractor-args', 'youtube:player_client=android,ios,tv_embedded,web',
     '-o', '-',
     '--', target
   ];

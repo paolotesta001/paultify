@@ -26,7 +26,7 @@ const STATUS_COLOR = {
 // Why a sheet instead of a sidebar? On a phone the sidebar would either
 // vanish or compete with the tab bar. A sheet is the iOS-native pattern.
 export default function DownloadQueue() {
-  const { items, remove, clearDone } = useDownloadQueue();
+  const { items, remove, clearDone, enqueue } = useDownloadQueue();
   const [open, setOpen] = useState(false);
 
   if (!items.length) return null;
@@ -35,6 +35,23 @@ export default function DownloadQueue() {
     it.status !== 'done' && it.status !== 'error'
   ).length;
   const finished = items.length - active;
+  const failed = items.filter(it => it.status === 'error');
+
+  // Re-enqueue a failed item with all of its original metadata, then drop
+  // the old error row so the user sees a fresh "Waiting…" line take its
+  // place. Same logic for retry-all.
+  const retry = it => {
+    enqueue(it.query, {
+      playlistId: it.playlistId,
+      expectedTitle: it.expectedTitle,
+      expectedArtist: it.expectedArtist,
+      expectedAlbum: it.expectedAlbum,
+      expectedDuration: it.expectedDuration,
+      expectedCoverUrl: it.expectedCoverUrl
+    });
+    remove(it.id);
+  };
+  const retryAll = () => failed.forEach(retry);
 
   return (
     <>
@@ -68,6 +85,14 @@ export default function DownloadQueue() {
                 </p>
               </div>
               <div className="flex items-center gap-1">
+                {failed.length > 0 && (
+                  <button
+                    onClick={retryAll}
+                    className="px-2 py-1 text-[11px] uppercase tracking-wider text-accent hover:text-accent-dim"
+                  >
+                    Retry {failed.length}
+                  </button>
+                )}
                 {finished > 0 && (
                   <button
                     onClick={clearDone}
@@ -105,12 +130,22 @@ export default function DownloadQueue() {
                         <span className="inline-block ml-1 animate-pulse">…</span>
                       )}
                     </span>
-                    <button
-                      onClick={() => remove(item.id)}
-                      className="text-[10px] uppercase tracking-wider text-ink-500 hover:text-ink-300"
-                    >
-                      {item.status === 'done' || item.status === 'error' ? 'Hide' : 'Cancel'}
-                    </button>
+                    <div className="flex items-center gap-2">
+                      {item.status === 'error' && (
+                        <button
+                          onClick={() => retry(item)}
+                          className="text-[10px] uppercase tracking-wider text-accent hover:text-accent-dim font-semibold"
+                        >
+                          Retry
+                        </button>
+                      )}
+                      <button
+                        onClick={() => remove(item.id)}
+                        className="text-[10px] uppercase tracking-wider text-ink-500 hover:text-ink-300"
+                      >
+                        {item.status === 'done' || item.status === 'error' ? 'Hide' : 'Cancel'}
+                      </button>
+                    </div>
                   </div>
                   {item.error && (
                     <p className="mt-1 text-[10px] text-red-400 break-words">{item.error}</p>

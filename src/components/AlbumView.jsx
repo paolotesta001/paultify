@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db, deleteSong } from '../db/database.js';
 import { usePlayer } from '../hooks/usePlayer.jsx';
+import { findTrack, fetchCoverBlob } from '../lib/discover.js';
 import { Music, Trash } from './Icons.jsx';
 
 // Album page from your own library. Lists every song you have tagged with
@@ -82,6 +83,52 @@ export default function AlbumView({ albumName, artistName, displayName, onBack, 
     await deleteSong(song.id);
   };
 
+  // "Auto-organize from Deezer" — shown only on the Singles & EPs tile.
+  // For each null-album song, look it up on Deezer and write back the
+  // album name + cover (if missing). The song's reactive query then moves
+  // it out of this view into its actual album's tile on the Artist page.
+  const isSingles = !albumName;
+  const [organizing, setOrganizing] = useState(false);
+  const [organizeProgress, setOrganizeProgress] = useState(0);
+  const [organizeResult, setOrganizeResult] = useState(null);
+
+  const handleOrganize = async () => {
+    if (!songs?.length || organizing) return;
+    setOrganizing(true);
+    setOrganizeProgress(0);
+    setOrganizeResult(null);
+    let updated = 0;
+    for (let i = 0; i < songs.length; i++) {
+      const song = songs[i];
+      try {
+        const t = await findTrack(song.artist, song.title);
+        // Sanity check: Deezer's match should share at least one title word
+        // with what we have. Otherwise we'd happily file "Invidia" under
+        // "Che gusto c'è" the same way the queue used to.
+        if (t && titleOverlap(song.title, t.title)) {
+          const updates = {};
+          if (t.album?.title) updates.album = t.album.title;
+          if (!song._hasCover) {
+            const coverUrl = t.album?.cover_xl || t.album?.cover_big;
+            if (coverUrl) {
+              const blob = await fetchCoverBlob(coverUrl);
+              if (blob) updates.coverBlob = blob;
+            }
+          }
+          if (Object.keys(updates).length) {
+            await db.songs.update(song.id, updates);
+            updated++;
+          }
+        }
+      } catch {
+        // Skip — one bad lookup shouldn't kill the run.
+      }
+      setOrganizeProgress(i + 1);
+    }
+    setOrganizing(false);
+    setOrganizeResult({ updated, total: songs.length });
+  };
+
   return (
     <div className="pb-6">
       <button
@@ -107,16 +154,36 @@ export default function AlbumView({ albumName, artistName, displayName, onBack, 
           <p className="text-xs text-ink-500 mt-0.5">
             {songs?.length || 0} {songs?.length === 1 ? 'song' : 'songs'} in your library
           </p>
-          <button
-            onClick={handlePlayAll}
-            disabled={!songs?.length}
-            className="mt-2 px-4 py-1.5 rounded-full bg-accent text-ink-900 text-xs font-semibold disabled:opacity-50"
-          >
-            ▶ Play all
-          </button>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <button
+              onClick={handlePlayAll}
+              disabled={!songs?.length}
+              className="px-4 py-1.5 rounded-full bg-accent text-ink-900 text-xs font-semibold disabled:opacity-50"
+            >
+              ▶ Play all
+            </button>
+            {isSingles && songs?.length > 0 && (
+              <button
+                onClick={handleOrganize}
+                disabled={organizing}
+                className="px-3 py-1.5 rounded-full bg-ink-700 text-ink-100 text-xs font-medium disabled:opacity-60"
+              >
+                {organizing
+                  ? `Organizing ${organizeProgress}/${songs.length}…`
+                  : 'Auto-organize from Deezer'}
+              </button>
+            )}
+          </div>
+          {organizeResult && (
+            <p className="mt-2 text-[11px] text-accent">
+              Moved {organizeResult.updated} of {organizeResult.total} songs into their albums.
+            </p>
+          )}
         </div>
       </header>
 
+      {/* helper — kept here so the validation rule lives next to the
+          only place it's used. */}
       <ul>
         {songs?.map((song, i) => {
           const isCurrent = currentSong?.id === song.id;
@@ -154,4 +221,25 @@ export default function AlbumView({ albumName, artistName, displayName, onBack, 
       </ul>
     </div>
   );
+}
+
+// Same idea as the queue's looksLikeMatch but compares titles only — we
+// already know the artist matches (we filtered by it in the query). Keeps
+// the auto-organize rule from filing a song under the wrong album just
+// because Deezer's top hit was the artist's most popular track.
+function titleOverlap(local, remote) {
+  const STOP = new Set([
+    'the', 'a', 'an', 'of', 'di', 'del', 'la', 'le', 'il', 'lo', 'i', 'e',
+    'and', 'feat', 'ft', 'featuring', 'with', 'remix', 'version', 'official',
+    'audio', 'video', 'lyrics', 'song', 'music', 'remastered'
+  ]);
+  const tok = s => new Set(
+    (s || '').toLowerCase().replace(/[^\w\s]/g, ' ').split(/\s+/)
+      .filter(w => w.length > 2 && !STOP.has(w))
+  );
+  const a = tok(local);
+  const b = tok(remote);
+  if (!a.size) return true;
+  for (const w of a) if (b.has(w)) return true;
+  return false;
 }
