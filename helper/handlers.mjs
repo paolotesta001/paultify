@@ -53,6 +53,59 @@ export function readBody(req) {
   });
 }
 
+// Run yt-dlp once in `dir`. Returns { ok: true, file } on success, or
+// { ok: false, error } if yt-dlp errored or produced no mp3. We pull this
+// out of handleDownload so the caller can sequence multiple attempts with
+// progressively looser filters.
+async function runOneDownload(dir, target, filter) {
+  const args = [
+    '-f', 'bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio/best',
+    '-x',
+    '--audio-format', 'mp3',
+    '--audio-quality', '0',
+    '--embed-metadata',
+    '--no-playlist',
+    '--no-warnings',
+    '--quiet',
+    '--extractor-args', 'youtube:player_client=android,ios,tv_embedded,web',
+    ...(filter ? ['--match-filter', filter] : []),
+    '-o', join(dir, '%(title).150B.%(ext)s'),
+    '--', target
+  ];
+
+  let proc;
+  try {
+    proc = spawn('yt-dlp', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+  } catch (err) {
+    return { ok: false, error: err.code === 'ENOENT' ? 'yt-dlp not on PATH' : err.message, fatal: true };
+  }
+
+  let stderr = '';
+  proc.stderr.on('data', c => { stderr += c.toString(); });
+  let spawnError = null;
+  proc.on('error', err => { spawnError = err; });
+
+  const code = await new Promise(resolve => proc.on('close', resolve));
+  if (spawnError) {
+    const msg = spawnError.code === 'ENOENT'
+      ? 'yt-dlp not on PATH'
+      : spawnError.message;
+    return { ok: false, error: msg, fatal: true };
+  }
+  if (code !== 0) {
+    return { ok: false, error: stderr.trim().split('\n').pop()?.slice(0, 300) || 'download failed' };
+  }
+
+  const files = (await readdir(dir)).filter(f => f.toLowerCase().endsWith('.mp3'));
+  if (!files.length) {
+    // Most common cause: every candidate got rejected by --match-filter.
+    // yt-dlp exits 0 in that case, so the caller can usefully retry with
+    // a looser filter (or none).
+    return { ok: false, error: 'no candidate matched filter' };
+  }
+  return { ok: true, file: files[0] };
+}
+
 export async function handleDownload(req, res) {
   let query, expectedDuration;
   try {
@@ -70,92 +123,53 @@ export async function handleDownload(req, res) {
   }
   const trimmed = query.trim();
   const isUrl = /^https?:\/\//i.test(trimmed);
-  // ytsearch5 + match-filter lets yt-dlp skip past the 4:42 music video
-  // for a song that's actually 4:23. With no expected duration we just bias
-  // toward typical song lengths.
-  const target = isUrl ? trimmed : `ytsearch5:${trimmed}`;
-  const filter = expectedDuration
-    ? `duration > ${Math.max(30, Math.round(expectedDuration - 15))} & duration < ${Math.round(expectedDuration + 15)}`
-    : 'duration > 60 & duration < 720';
+  const target = isUrl ? trimmed : `ytsearch10:${trimmed}`;
 
-  const dir = await mkdtemp(join(tmpdir(), 'lyric-dl-'));
-  try {
-    const args = [
-      // Pick the loudest, longest audio stream YouTube has, falling back
-      // gracefully so we never error with "no audio extracted" when m4a
-      // isn't available — opus / mp3 / whatever-else all transcode to
-      // mp3 below.
-      '-f', 'bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio/best',
-      '-x',
-      '--audio-format', 'mp3',
-      '--audio-quality', '0',
-      '--embed-metadata',
-      // NOTE: deliberately NOT embedding the YouTube thumbnail. The
-      // thumbnail-embed pipeline re-muxes the MP3 through ffmpeg and can
-      // alter the LAME info header, which shifts where browsers think
-      // audio starts and breaks lyrics sync. We get cover art from
-      // Deezer's catalog instead (see /api/cover).
-      '--no-playlist',
-      '--no-warnings',
-      '--quiet',
-      // Try several YouTube clients in order. android + ios + tv_embedded
-      // dodge most of YouTube's age-gates and bot checks; tv_embedded
-      // specifically rescues "Sign in to confirm your age" tracks like
-      // Coldplay's "Viva la Vida" when android alone isn't enough.
-      '--extractor-args', 'youtube:player_client=android,ios,tv_embedded,web',
-      '--match-filter', filter,
-      '-o', join(dir, '%(title).150B.%(ext)s'),
-      '--', target
-    ];
+  // Progressively wider filters. Skipping straight to "no filter" was
+  // letting music videos / live cuts through too often; this ladder tries
+  // the right cut first, opens up if YouTube's top 10 just don't fit.
+  //   tier 0 — ±15s of the studio duration (rejects most music videos)
+  //   tier 1 — ±45s (lets some long intros through)
+  //   tier 2 — sane 60s–12min window
+  //   tier 3 — no filter at all (last resort, take whatever ranks top)
+  const tiers = [];
+  if (expectedDuration && !isUrl) {
+    tiers.push(`duration > ${Math.max(30, Math.round(expectedDuration - 15))} & duration < ${Math.round(expectedDuration + 15)}`);
+    tiers.push(`duration > ${Math.max(30, Math.round(expectedDuration - 45))} & duration < ${Math.round(expectedDuration + 45)}`);
+  }
+  tiers.push('duration > 60 & duration < 720');
+  tiers.push(null);
 
-    let proc;
+  let lastError = 'download failed';
+  for (const filter of tiers) {
+    const dir = await mkdtemp(join(tmpdir(), 'lyric-dl-'));
     try {
-      proc = spawn('yt-dlp', args, { stdio: ['ignore', 'pipe', 'pipe'] });
-    } catch {
-      sendJson(res, 500, { error: 'yt-dlp not found on PATH. Run: winget install yt-dlp' });
-      return;
+      const result = await runOneDownload(dir, target, filter);
+      if (result.ok) {
+        const buf = await readFile(join(dir, result.file));
+        res.writeHead(200, {
+          ...corsHeaders(),
+          'Content-Type': 'audio/mpeg',
+          'Content-Length': buf.length,
+          'X-Filename': encodeURIComponent(result.file)
+        });
+        res.end(buf);
+        return;
+      }
+      if (result.fatal) {
+        sendJson(res, 500, { error: result.error });
+        return;
+      }
+      lastError = result.error;
+    } catch (err) {
+      lastError = err.message || lastError;
+    } finally {
+      rm(dir, { recursive: true, force: true }).catch(() => {});
     }
+  }
 
-    let stderr = '';
-    proc.stderr.on('data', c => { stderr += c.toString(); });
-
-    let spawnError = null;
-    proc.on('error', err => { spawnError = err; });
-
-    const code = await new Promise(resolve => proc.on('close', resolve));
-
-    if (spawnError) {
-      const msg = spawnError.code === 'ENOENT'
-        ? 'yt-dlp not found on PATH. Run: winget install yt-dlp'
-        : spawnError.message;
-      sendJson(res, 500, { error: msg });
-      return;
-    }
-    if (code !== 0) {
-      sendJson(res, 500, { error: (stderr.trim().split('\n').pop() || 'download failed').slice(0, 500) });
-      return;
-    }
-
-    const files = (await readdir(dir)).filter(f => f.toLowerCase().endsWith('.mp3'));
-    if (!files.length) {
-      sendJson(res, 404, { error: 'no audio extracted (ffmpeg installed?)' });
-      return;
-    }
-
-    const mp3Path = join(dir, files[0]);
-    const buf = await readFile(mp3Path);
-
-    res.writeHead(200, {
-      ...corsHeaders(),
-      'Content-Type': 'audio/mpeg',
-      'Content-Length': buf.length,
-      'X-Filename': encodeURIComponent(files[0])
-    });
-    res.end(buf);
-  } catch (err) {
-    sendJson(res, 500, { error: err.message || 'unknown error' });
-  } finally {
-    rm(dir, { recursive: true, force: true }).catch(() => {});
+  if (!res.headersSent) {
+    sendJson(res, 502, { error: lastError });
   }
 }
 
