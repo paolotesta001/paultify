@@ -53,11 +53,30 @@ export function readBody(req) {
   });
 }
 
+// Title-keyword blocklist applied at every tier. Even at tier 3 (no
+// duration filter) we never want to silently grab an 8D / nightcore /
+// slowed-reverb edit when the user asked for the studio cut. Without this,
+// "Smooth Criminal" returned an 8D-audio version with channels jumping
+// between headphones.
+//
+// We deliberately drop `live` and `remix` from this list because they're
+// legitimate user requests sometimes — those exclusions live in the search
+// query (where they can be conditionally skipped when the user typed those
+// words themselves).
+const TITLE_BLOCK = '(?i)(\\b8d\\b|\\b8 ?d audio\\b|nightcore|slowed|reverb|sped ?up|earrape|reaction|tutorial|how to play|guitar lesson|piano lesson|karaoke|instrumental|mashup)';
+
 // Run yt-dlp once in `dir`. Returns { ok: true, file } on success, or
 // { ok: false, error } if yt-dlp errored or produced no mp3. We pull this
 // out of handleDownload so the caller can sequence multiple attempts with
 // progressively looser filters.
 async function runOneDownload(dir, target, filter) {
+  // The title block is ANDed onto every tier, including the "no filter"
+  // last-resort tier. yt-dlp's match-filter language uses `&` for AND and
+  // !~= for "does not match regex".
+  const fullFilter = filter
+    ? `(${filter}) & title!~='${TITLE_BLOCK}'`
+    : `title!~='${TITLE_BLOCK}'`;
+
   const args = [
     '-f', 'bestaudio[ext=m4a]/bestaudio[ext=mp3]/bestaudio/best',
     '-x',
@@ -68,7 +87,7 @@ async function runOneDownload(dir, target, filter) {
     '--no-warnings',
     '--quiet',
     '--extractor-args', 'youtube:player_client=android,ios,tv_embedded,web',
-    ...(filter ? ['--match-filter', filter] : []),
+    '--match-filter', fullFilter,
     '-o', join(dir, '%(title).150B.%(ext)s'),
     '--', target
   ];
@@ -123,15 +142,20 @@ export async function handleDownload(req, res) {
   }
   const trimmed = query.trim();
   const isUrl = /^https?:\/\//i.test(trimmed);
-  const target = isUrl ? trimmed : `ytsearch10:${trimmed}`;
+  // Broader search (20 results vs 10) gives the title-block + duration
+  // filters more candidates to pick from before we declare failure. Without
+  // this, songs that *exist* on YouTube were failing because the top 10
+  // search hits were all music videos / 8D edits / covers and got rejected.
+  const target = isUrl ? trimmed : `ytsearch20:${trimmed}`;
 
   // Progressively wider filters. Skipping straight to "no filter" was
   // letting music videos / live cuts through too often; this ladder tries
-  // the right cut first, opens up if YouTube's top 10 just don't fit.
+  // the right cut first, opens up if YouTube's top 20 just don't fit.
   //   tier 0 — ±15s of the studio duration (rejects most music videos)
   //   tier 1 — ±45s (lets some long intros through)
   //   tier 2 — sane 60s–12min window
-  //   tier 3 — no filter at all (last resort, take whatever ranks top)
+  //   tier 3 — no filter at all (last resort — but TITLE_BLOCK still
+  //            applies, so we won't grab an 8D / nightcore edit silently)
   const tiers = [];
   if (expectedDuration && !isUrl) {
     tiers.push(`duration > ${Math.max(30, Math.round(expectedDuration - 15))} & duration < ${Math.round(expectedDuration + 15)}`);

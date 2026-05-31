@@ -122,28 +122,50 @@ function tokens(s) {
   );
 }
 
-// Stricter validator: the user's title-words (their query minus the words
-// that match the candidate's artist) must overlap with the candidate's
-// title. Without this rule we were accepting any track by the right artist
-// — e.g. "invidia of fabri fibra" silently became "Che gusto c'è" because
-// "fabri fibra" alone hit the old 40% bar.
+// Stricter validator. Two rules:
+//   1. If the user typed enough words to imply they specified an artist
+//      (3+ meaningful tokens) AND we can identify the candidate's artist
+//      tokens, at least one user word MUST be in those artist tokens.
+//      Otherwise Deezer is offering us a different artist entirely —
+//      e.g. "vasco rossi una nuova canzone per lei" came back as
+//      "Una Nuova Canzone" by an unrelated Italian artist, and the title
+//      overlap alone (una/nuova/canzone) was enough to wrongly accept it.
+//   2. The user's *title-words* (their query minus the words that match
+//      the candidate's artist) must overlap with the candidate's title.
+//      Stops "invidia of fabri fibra" becoming "Che gusto c'è".
 function looksLikeMatch(userQuery, track) {
   const userTokens = tokens(userQuery);
   if (!userTokens.size) return true;
   const titleTokens = tokens(track.title);
   const artistTokens = tokens(track.artist?.name || '');
 
-  // Words the user typed that don't match the artist — that's what they
-  // probably meant as the song title.
+  // Rule 1 — artist overlap.
+  if (userTokens.size >= 3 && artistTokens.size > 0) {
+    let artistHit = false;
+    for (const t of userTokens) if (artistTokens.has(t)) { artistHit = true; break; }
+    if (!artistHit) return false;
+  }
+
+  // Rule 2 — title overlap.
   const userTitleTokens = new Set([...userTokens].filter(t => !artistTokens.has(t)));
-
-  // Pure artist search ("just play me anything by X") — any track is fine.
-  if (!userTitleTokens.size) return true;
-
-  // Otherwise we need at least one title-word actually present in the
-  // candidate title.
+  if (!userTitleTokens.size) return true; // pure artist search
   for (const t of userTitleTokens) if (titleTokens.has(t)) return true;
   return false;
+}
+
+// Common parenthetical / dash annotations like "(Remastered 2025)" or
+// " - Remastered" or "(Deluxe Edition)" make the YouTube search too
+// specific — there's often no upload titled exactly that. We strip them
+// from the *search* string only; the canonical title we store in the
+// library still includes them.
+function stripVariantTags(title) {
+  if (!title) return title;
+  return title
+    // "(Whatever Remastered 2025)" or "[2025 Remaster]" etc.
+    .replace(/\s*[(\[][^)\]]*\b(?:remaster(?:ed)?|deluxe|edition|extended|version|anniversary|expanded|mono|stereo|reissue|bonus|disc|cd)\b[^)\]]*[)\]]/gi, '')
+    // " - Remastered" or " - Remastered 2025"
+    .replace(/\s*[-—]\s*(?:\d{4}\s+)?(?:remaster(?:ed)?|deluxe|extended|anniversary|reissue)(?:\s+\d{4})?\s*$/gi, '')
+    .trim() || title;
 }
 
 export function DownloadQueueProvider({ children }) {
@@ -224,18 +246,44 @@ export function DownloadQueueProvider({ children }) {
       // Build a focused yt-dlp query. The "audio" hint nudges YouTube's
       // search toward Topic / Official Audio uploads. The negative tokens
       // dodge the recurring traps:
-      //   -cover     covers by other artists
-      //   -karaoke   karaoke / instrumental backing tracks
-      //   -live      live recordings when the user wanted the studio cut
+      //   -cover -karaoke -instrumental   wrong-version traps
+      //   -live -remix                    only when the user didn't ask for them
+      //   -8d -nightcore -slowed -reverb  edits the user almost never wants
+      //   -sped -earrape -reaction        same
+      //   -tutorial -lesson -mashup       wrong-genre traps
       //
-      // YouTube's search engine honours these `-word` exclusions.
-      const usingDeezer = !!(expectedTitle && expectedArtist) && !/^https?:\/\//i.test(query);
-      const negatives = '-cover -karaoke -live';
-      const ytQuery = /^https?:\/\//i.test(query)
+      // YouTube's search engine honours these `-word` exclusions. We only
+      // skip a negative when the user themselves typed that word in their
+      // query — e.g. searching "Stairway to Heaven live" should keep `-live`
+      // out so the live version actually comes through.
+      const isUrlQuery = /^https?:\/\//i.test(query);
+      const usingDeezer = !!(expectedTitle && expectedArtist) && !isUrlQuery;
+      // Build the negatives list. Only drop a keyword when the user (or
+      // the canonical Deezer title) actually mentions it as a word —
+      // substring matching would treat "Liverpool" as the user asking for
+      // a live version. Anything mentioned by the user → not negated.
+      const userText = `${query} ${expectedTitle || ''}`;
+      const mentioned = w => new RegExp(`\\b${w}\\b`, 'i').test(userText);
+      const allNegatives = [
+        'cover', 'karaoke', 'instrumental',
+        'live', 'remix',
+        '8d', 'nightcore', 'slowed', 'reverb', 'sped', 'earrape',
+        'reaction', 'tutorial', 'lesson', 'mashup'
+      ];
+      const negatives = allNegatives
+        .filter(w => !mentioned(w))
+        .map(w => `-${w}`)
+        .join(' ');
+      // Strip "(Remastered 2025)" / "- Deluxe Edition" / etc. from the
+      // title BEFORE building the YouTube query. The bare title finds
+      // many more candidates for the duration filter to chew through.
+      // (The full title still lives on the song row so the user sees it.)
+      const searchTitle = stripVariantTags(expectedTitle);
+      const ytQuery = isUrlQuery
         ? query
         : usingDeezer
-          ? `${expectedArtist} ${expectedTitle} audio ${negatives}`
-          : `${query} audio ${negatives}`;
+          ? `${expectedArtist} ${searchTitle} audio ${negatives}`.trim()
+          : `${query} audio ${negatives}`.trim();
 
       dispatch({ type: 'update', id, patch: { status: 'downloading' } });
       const file = await downloadFromYoutube(ytQuery, { duration: expectedDuration });
@@ -285,21 +333,34 @@ export function DownloadQueueProvider({ children }) {
       });
 
       dispatch({ type: 'update', id, patch: { status: 'lyrics', title: canonicalTitle, artist: canonicalArtist } });
-      const fetched = await fetchLyricsFromLrclib({
-        artist: canonicalArtist,
-        title: canonicalTitle,
-        album: canonicalAlbum,
-        duration: meta.duration
-      }).catch(() => null);
-      await setLyrics(songId, {
-        lrcText: fetched?.syncedLyrics || null,
-        plainText: fetched?.plainLyrics || null,
-        source: fetched ? 'lrclib' : 'none'
-      });
+
+      // Lyrics are best-effort. The song is already saved at this point —
+      // a network blip on LRCLIB or an IDB write hiccup must NOT roll the
+      // queue row to "error" and trick the user into thinking the download
+      // failed. Live recordings + most B-sides simply have no lyrics, and
+      // that's fine. We still record source='none' so the player UI shows
+      // "No lyrics" instead of a stuck "fetching" state.
+      try {
+        const fetched = await fetchLyricsFromLrclib({
+          artist: canonicalArtist,
+          title: canonicalTitle,
+          album: canonicalAlbum,
+          duration: meta.duration
+        }).catch(() => null);
+        await setLyrics(songId, {
+          lrcText: fetched?.syncedLyrics || null,
+          plainText: fetched?.plainLyrics || null,
+          source: fetched ? 'lrclib' : 'none'
+        });
+      } catch {
+        // swallow — song is downloaded, that's what matters
+      }
 
       // Add to the requesting playlist *after* the song row exists, so the
       // playlist's bulkGet sees a hydrated song.
-      if (playlistId) await addSongToPlaylist(playlistId, songId);
+      if (playlistId) {
+        try { await addSongToPlaylist(playlistId, songId); } catch {}
+      }
 
       dispatch({ type: 'update', id, patch: { status: 'done', songId } });
       setTimeout(() => dispatch({ type: 'remove', id }), KEEP_DONE_MS);

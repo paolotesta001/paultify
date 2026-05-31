@@ -18,6 +18,12 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.svg', 'apple-touch-icon.png'],
       manifest: {
+        // Unique stable id. Without this, iOS Home Screen icons for
+        // multiple PWAs hosted on the same origin (e.g. *.github.io)
+        // sometimes resume the wrong PWA when the user taps an icon — iOS
+        // falls back to start_url for identity, and overlapping start_urls
+        // collide. A unique id breaks the tie.
+        id: 'paultify-lyric-player',
         name: 'Lyric Player',
         short_name: 'Lyric',
         description: 'Offline music player with synced karaoke lyrics. Import Spotify playlists, search Deezer, save songs locally.',
