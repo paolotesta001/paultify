@@ -77,7 +77,12 @@ export default function Home({ onOpen, onPlay }) {
   return (
     <div className="pb-6">
       <header className="px-4 pt-6 pb-4 flex items-center justify-between">
-        <h1 className="text-2xl font-bold">{greeting}</h1>
+        <div>
+          <h1 className="text-2xl font-bold">{greeting}</h1>
+          <p className="text-[11px] text-ink-400 mt-0.5 tracking-wide">
+            {__APP_NAME__} · v{__APP_VERSION__}
+          </p>
+        </div>
         {songs?.length > 0 && (
           <button
             onClick={handleShuffle}

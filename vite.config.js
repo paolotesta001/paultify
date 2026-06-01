@@ -1,7 +1,12 @@
+import { readFileSync } from 'node:fs';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 import { helperPlugin } from './helper/vite-plugin.mjs';
+
+const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'));
+const APP_NAME = 'Paultify';
+const APP_VERSION = pkg.version;
 
 // `base` controls the asset path. For root-level hosting (custom domain or
 // user/org GitHub Pages site) leave it as `/`. For project-level GitHub Pages
@@ -11,6 +16,10 @@ const base = process.env.VITE_BASE || '/';
 
 export default defineConfig({
   base,
+  define: {
+    __APP_NAME__: JSON.stringify(APP_NAME),
+    __APP_VERSION__: JSON.stringify(APP_VERSION),
+  },
   plugins: [
     react(),
     helperPlugin(),
@@ -24,8 +33,8 @@ export default defineConfig({
         // falls back to start_url for identity, and overlapping start_urls
         // collide. A unique id breaks the tie.
         id: 'paultify-lyric-player',
-        name: 'Lyric Player',
-        short_name: 'Lyric',
+        name: APP_NAME,
+        short_name: APP_NAME,
         description: 'Offline music player with synced karaoke lyrics. Import Spotify playlists, search Deezer, save songs locally.',
         theme_color: '#0a0a0a',
         background_color: '#0a0a0a',
