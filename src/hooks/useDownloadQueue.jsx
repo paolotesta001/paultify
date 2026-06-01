@@ -172,6 +172,12 @@ export function DownloadQueueProvider({ children }) {
   const [items, dispatch] = useReducer(reducer, []);
   const inFlightRef = useRef(new Set());
   const hydratedRef = useRef(false);
+  // When the helper is unreachable, we don't want every queued item to wait
+  // its turn and then hit the same 120s timeout (an album of 12 = 12 minutes
+  // of "downloading…" before the user sees what's wrong). After a single
+  // confirmed-offline health check, fail subsequent items fast for a short
+  // window. A successful download clears the flag.
+  const helperOfflineUntilRef = useRef(0);
 
   // On boot, pull any leftover queue rows from IDB and re-arm them. The
   // worker effect below will pick them up like a fresh enqueue.
@@ -286,7 +292,27 @@ export function DownloadQueueProvider({ children }) {
           : `${query} audio ${negatives}`.trim();
 
       dispatch({ type: 'update', id, patch: { status: 'downloading' } });
-      const file = await downloadFromYoutube(ytQuery, { duration: expectedDuration });
+
+      // Fast-fail path. If a recent attempt confirmed the helper is offline,
+      // skip the 120s wait and surface the error immediately so the user can
+      // mass-retry once they fix Tailscale / start the helper.
+      if (Date.now() < helperOfflineUntilRef.current) {
+        throw new Error('helper offline — start it on your laptop, then Retry');
+      }
+
+      let file;
+      try {
+        file = await downloadFromYoutube(ytQuery, { duration: expectedDuration });
+        helperOfflineUntilRef.current = 0;
+      } catch (err) {
+        const msg = err.message || '';
+        if (/helper unreachable|helper offline/i.test(msg)) {
+          // Cache the offline state for 20s so the rest of the album fails
+          // in ~instant rather than queueing another 12 × 120s timeouts.
+          helperOfflineUntilRef.current = Date.now() + 20_000;
+        }
+        throw err;
+      }
 
       dispatch({ type: 'update', id, patch: { status: 'parsing' } });
       const meta = await extractMetadata(file);

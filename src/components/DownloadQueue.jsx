@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useDownloadQueue } from '../hooks/useDownloadQueue.jsx';
+import { checkHelperHealth } from '../lib/youtubeHelper.js';
 
 const STATUS_LABEL = {
   queued: 'Waiting…',
@@ -28,12 +29,27 @@ const STATUS_COLOR = {
 export default function DownloadQueue() {
   const { items, remove, clearDone, enqueue } = useDownloadQueue();
   const [open, setOpen] = useState(false);
-
-  if (!items.length) return null;
+  const [helperOnline, setHelperOnline] = useState(true);
 
   const active = items.filter(it =>
     it.status !== 'done' && it.status !== 'error'
   ).length;
+
+  // Probe the helper while anything is in flight. Without this banner, a
+  // dead helper presents as items stuck on "Downloading…" with no clue why.
+  useEffect(() => {
+    if (!active) return;
+    let cancelled = false;
+    const probe = async () => {
+      const ok = await checkHelperHealth();
+      if (!cancelled) setHelperOnline(ok);
+    };
+    probe();
+    const id = setInterval(probe, 10_000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [active]);
+
+  if (!items.length) return null;
   const finished = items.length - active;
   const failed = items.filter(it => it.status === 'error');
 
@@ -110,6 +126,16 @@ export default function DownloadQueue() {
                 </button>
               </div>
             </div>
+
+            {!helperOnline && active > 0 && (
+              <div className="mx-3 mb-2 px-3 py-2 rounded-lg bg-red-950/60 border border-red-800/60 text-red-200 text-[11px] leading-snug">
+                <p className="font-semibold mb-0.5">Helper offline</p>
+                <p className="text-red-300/90">
+                  Downloads will fail until your laptop's helper + Tailscale
+                  are back. Once online, tap Retry to resume.
+                </p>
+              </div>
+            )}
 
             <ul className="overflow-y-auto px-3 pb-4 space-y-2">
               {items.map(item => (
